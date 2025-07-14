@@ -165,23 +165,19 @@ class TeacherLogitsServer:
         
         # Sample
         samples = torch.multinomial(probs.view(-1, vocab_size), num_samples, replacement=True)
-        sampled_token_ids = samples.view(num_samples, seq_len).squeeze() if seq_len == 1 else samples.view(num_samples, seq_len)
+        sampled_token_ids = samples.view(num_samples, seq_len)
         
-        # Extract corresponding logit values
-        if sampled_token_ids.dim() == 1:
-            sampled_token_ids_expanded = sampled_token_ids.unsqueeze(0)
-        else:
-            sampled_token_ids_expanded = sampled_token_ids
-            
         # Get logit values for sampled tokens
         sampled_logit_values = torch.gather(
-            original_logits.unsqueeze(0).expand(sampled_token_ids_expanded.shape[0], -1, -1),
+            original_logits.unsqueeze(0).expand(num_samples, -1, -1),
             dim=-1,
-            index=sampled_token_ids_expanded.unsqueeze(-1)
+            index=sampled_token_ids.unsqueeze(-1)
         ).squeeze(-1)
         
+        # Handle single sequence case
         if seq_len == 1:
-            sampled_logit_values = sampled_logit_values.squeeze()
+            sampled_token_ids = sampled_token_ids.squeeze(-1)  # Remove seq_len dimension
+            sampled_logit_values = sampled_logit_values.squeeze(-1)  # Remove seq_len dimension
         
         return sampled_token_ids, sampled_logit_values
     
@@ -292,7 +288,7 @@ class TeacherLogitsServer:
 # Example usage
 if __name__ == "__main__":
     # Initialize server
-    server = TeacherLogitsServer("microsoft/DialoGPT-medium")
+    server = TeacherLogitsServer("google/gemma-3-1b-it")
     
     # Sample text
     text = "The quick brown fox"
