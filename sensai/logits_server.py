@@ -287,41 +287,151 @@ class TeacherLogitsServer:
 
 # Example usage
 if __name__ == "__main__":
-    # Initialize server
-    server = TeacherLogitsServer("google/gemma-3-1b-it")
+    import argparse
+    import os
+    import tempfile
+    from .server import SensAIServer
+    from .transports import NamedPipeTransport, SharedMemoryTransport
     
-    # Sample text
-    text = "The quick brown fox"
+    def create_transport(transport_type: str, **kwargs):
+        """Create transport based on type and arguments"""
+        if transport_type == "named_pipe":
+            pipe_dir = kwargs.get("pipe_dir", tempfile.mkdtemp(prefix="sensai_teacher_"))
+            num_clients = kwargs.get("num_clients", 4)
+            return NamedPipeTransport(pipe_dir=pipe_dir, num_clients=num_clients), pipe_dir
+        
+        elif transport_type == "shared_memory":
+            shm_path = kwargs.get("shm_path", "/tmp/sensai_teacher_shm")
+            num_clients = kwargs.get("num_clients", 4)
+            max_elems = kwargs.get("max_elems", 1000000)
+            max_dtype = kwargs.get("max_dtype", np.float32)
+            return SharedMemoryTransport(
+                shm_path=shm_path, 
+                num_clients=num_clients, 
+                max_elems=max_elems, 
+                max_dtype=max_dtype
+            ), shm_path
+        
+        else:
+            raise ValueError(f"Unknown transport type: {transport_type}")
     
-    # Get logits first to show the sampling process
-    logits_list = server.get_prompt_logits(text)
-    logits = logits_list[0]
-    print(f"Original logits shape: {logits.shape}")
-    print(f"Sample logits for first position: {logits[0][:10]}...")  # Show first 10 logits
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Teacher Logits Server")
+    parser.add_argument("--model", type=str, default="google/gemma-3-1b-it", 
+                        help="Model name or path to load")
+    parser.add_argument("--device", type=str, default="auto", 
+                        help="Device to load model on (auto, cuda, cpu)")
+    parser.add_argument("--transport", type=str, default="named_pipe", 
+                        choices=["named_pipe", "shared_memory"],
+                        help="Transport type to use")
+    parser.add_argument("--num-clients", type=int, default=4, 
+                        help="Number of client slots")
+    parser.add_argument("--pipe-dir", type=str, 
+                        help="Directory for named pipes (auto-generated if not specified)")
+    parser.add_argument("--shm-path", type=str, default="/tmp/sensai_teacher_shm",
+                        help="Path for shared memory file")
+    parser.add_argument("--max-elems", type=int, default=1000000,
+                        help="Maximum elements per tensor for shared memory")
+    parser.add_argument("--interval", type=float, default=0.001,
+                        help="Server polling interval in seconds")
     
-    # Sample tokens and show the process
-    sampled_tokens, sampled_logit_values = server.sample_from_logits(logits, num_samples=3, temperature=0.8, top_p=0.9)
-    print(f"\nSampled token indices: {sampled_tokens}")
-    print(f"\nSampled logits values:")
-    for i in range(sampled_tokens.shape[0]):
-        print(f"Sample {i+1}: {sampled_logit_values[i].tolist()}")
+    args = parser.parse_args()
     
-    # Get sparse COO tensor with samples (test with 256 samples for distillation)
-    sparse_results = server.sample_to_sparse_coo(
-        text, 
-        num_samples=256,
-        temperature=0.8,
-        top_p=0.9
-    )
+    # Initialize teacher logits server
+    teacher_server = TeacherLogitsServer(args.model, device=args.device)
+    print(f"TeacherLogitsServer initialized with model: {args.model}")
     
-    # Print results
-    sparse_tensor = sparse_results[0]
-    print(f"\nSparse tensor shape: {sparse_tensor.shape}")
-    print(f"Number of non-zero elements: {sparse_tensor._nnz()}")
-    print(f"Sparsity: {1 - sparse_tensor._nnz() / sparse_tensor.numel():.4f}")
+    # Create transport based on arguments
+    transport_kwargs = {
+        "num_clients": args.num_clients,
+        "pipe_dir": args.pipe_dir,
+        "shm_path": args.shm_path,
+        "max_elems": args.max_elems,
+        "max_dtype": np.float32
+    }
     
-    # Decode samples
-    decoded = server.decode_samples(sparse_tensor)
-    print(f"\nDecoded samples:")
-    for i, sample in enumerate(decoded):
-        print(f"Sample {i+1}: {sample}")
+    transport, cleanup_path = create_transport(args.transport, **transport_kwargs)
+    print(f"Transport created: {args.transport} with {args.num_clients} client slots")
+    
+    def process_logits_request(input_tensor: np.ndarray) -> np.ndarray:
+        """
+        Process a logits request. Input tensor should contain:
+        - First element: request type (0=sample_to_sparse_coo, 1=get_prompt_logits)
+        - Second element: num_samples (for sampling requests)
+        - Third element: temperature
+        - Fourth element: top_p
+        - Fifth element: top_k
+        - Remaining elements: text as encoded string (UTF-8 bytes)
+        """
+        try:
+            # Parse request
+            request_type = int(input_tensor[0])
+            num_samples = int(input_tensor[1])
+            temperature = float(input_tensor[2])
+            top_p = float(input_tensor[3])
+            top_k = int(input_tensor[4])
+            
+            # Decode text from bytes
+            text_bytes = input_tensor[5:].astype(np.uint8).tobytes()
+            text = text_bytes.decode('utf-8').rstrip('\x00')  # Remove null padding
+            
+            print(f"Processing request: type={request_type}, text='{text}', samples={num_samples}")
+            
+            if request_type == 0:  # sample_to_sparse_coo
+                sparse_results = teacher_server.sample_to_sparse_coo(
+                    text, 
+                    num_samples=num_samples,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k
+                )
+                
+                # Convert sparse tensor to dense for transport
+                if sparse_results:
+                    sparse_tensor = sparse_results[0]
+                    # Return tensor info and indices/values
+                    dense_tensor = sparse_tensor.to_dense()
+                    return dense_tensor.numpy().flatten()
+                else:
+                    return np.array([0])  # Empty result
+                    
+            elif request_type == 1:  # get_prompt_logits
+                logits_list = teacher_server.get_prompt_logits(text)
+                if logits_list:
+                    logits = logits_list[0]
+                    return logits.numpy().flatten()
+                else:
+                    return np.array([0])  # Empty result
+            
+            else:
+                return np.array([-1])  # Invalid request type
+                
+        except Exception as e:
+            print(f"Error processing request: {e}")
+            return np.array([-1])  # Error indicator
+    
+    # Create and run server
+    sensai_server = SensAIServer(transport)
+    print(f"SensAIServer started with {transport.num_clients} client slots")
+    print("Server is running... Press Ctrl+C to stop")
+    
+    try:
+        sensai_server.run_loop(process_logits_request, interval=args.interval)
+    except KeyboardInterrupt:
+        print("\nServer stopped")
+    finally:
+        # Clean up resources
+        if args.transport == "named_pipe":
+            import shutil
+            shutil.rmtree(cleanup_path, ignore_errors=True)
+        elif args.transport == "shared_memory":
+            try:
+                if hasattr(transport, 'close'):
+                    transport.close()
+            except:
+                pass
+            # Clean up shared memory file
+            try:
+                os.unlink(cleanup_path)
+            except:
+                pass
