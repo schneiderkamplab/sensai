@@ -28,7 +28,7 @@ class Transport(ABC):
         raise ValueError(f"Unsupported dtype: {dtype}")
 
     def _resolve_dtype(self, dtype_enum: int):
-        return self._DTYPE_MAP().get(dtype_enum, np.float32)
+        return np.dtype(self._DTYPE_MAP().get(dtype_enum, np.float32))
 
     @staticmethod
     def _DTYPE_MAP():
