@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import pytest
 import numpy as np
-from transformers_logits_server import TeacherLogitsServer
+from sensai.logits_server import TeacherLogitsServer
 
 
 class TestTeacherLogitsServer:
