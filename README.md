@@ -24,7 +24,7 @@ The project centers around the `TeacherLogitsServer` class which provides:
 ## Installation
 
 ```bash
-pip install torch transformers numpy
+pip install torch>=2.7.1 transformers>=4.53.2 numpy>=2.3.1
 ```
 
 ## Usage
@@ -165,10 +165,10 @@ python -m sensai.logits_server
 ## Dependencies
 
 - Python >= 3.12
-- PyTorch >= 2.0.0
-- Transformers >= 4.39.3
+- PyTorch >= 2.7.1
+- Transformers >= 4.53.2
 - NumPy >= 2.3.1
-- pytest >= 7.0.0 (for testing)
+- pytest >= 8.4.1 (for testing)
 
 ## License
 
