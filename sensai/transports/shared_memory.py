@@ -38,10 +38,9 @@ class SharedMemoryTransport:
             self._datas[slot_id] = data_buf
 
     def write_tensor(self, slot_id: int, tensor: np.ndarray, role: str) -> None:
+        self._validate_role(role)
         if tensor.size > self.max_elems:
             raise ValueError(f"Tensor too large: {tensor.size} > {self.max_elems}")
-        if role not in ("client", "server"):
-            raise ValueError(f"Invalid role: {role}")
         self._datas[slot_id][:tensor.nbytes] = tensor.tobytes()
         header = self._headers[slot_id]
         header[1] = self._encode_dtype(tensor.dtype)
@@ -51,8 +50,7 @@ class SharedMemoryTransport:
         header[0] = 1-self._ROLE_MAP[role]
 
     def read_tensor(self, slot_id: int, role: str) -> np.ndarray | None:
-        if role not in ("client", "server"):
-            raise ValueError(f"Invalid role: {role}")
+        self._validate_role(role)
         header = self._headers[slot_id]
         if header[0] != self._ROLE_MAP[role]:
             return None
@@ -67,8 +65,7 @@ class SharedMemoryTransport:
         return tensor_data.reshape(shape).copy()
 
     def is_ready(self, slot_id: int, role: str) -> bool:
-        if role not in ("client", "server"):
-            raise ValueError(f"Invalid role: {role}")
+        self._validate_role(role)
         return self._headers[slot_id][0] == self._ROLE_MAP[role]
 
     def _encode_dtype(self, dtype: np.dtype) -> int:
@@ -78,7 +75,13 @@ class SharedMemoryTransport:
         raise ValueError(f"Unsupported dtype: {dtype}")
 
     def _resolve_dtype(self, dtype_enum: int):
-        return self._DTYPE_MAP.get(dtype_enum, np.float32)
+        if dtype_enum not in self._DTYPE_MAP:
+            raise ValueError(f"Invalid dtype enum: {dtype_enum}")
+        return self._DTYPE_MAP[dtype_enum]
+
+    def _validate_role(self, role: str):
+        if role not in self._ROLE_MAP:
+            raise ValueError(f"Invalid role: {role}")
 
     def close(self):
         self._mmap.close()
@@ -89,3 +92,9 @@ class SharedMemoryTransport:
             os.unlink(self.shm_path)
         except FileNotFoundError:
             pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
