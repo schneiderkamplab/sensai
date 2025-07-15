@@ -1,6 +1,8 @@
 import numpy as np
 import time
 
+__all__ = ["SensAIServer"]
+
 class SensAIServer:
 
     def __init__(self, transport):

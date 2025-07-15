@@ -1,6 +1,8 @@
 import numpy as np
 import time
 
+__all__ = ["SensAIClient"]
+
 class SensAIClient:
 
     def __init__(self, transport, slot_id: int):

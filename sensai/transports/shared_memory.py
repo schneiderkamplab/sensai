@@ -2,7 +2,11 @@ import mmap
 import numpy as np
 import os
 
-class SharedMemoryTransport:
+__all__ = ["SharedMemoryTransport"]
+
+from .transport_abc import Transport
+
+class SharedMemoryTransport(Transport):
 
     _DTYPE_MAP = {
         0: np.float32,
@@ -19,7 +23,7 @@ class SharedMemoryTransport:
 
     def __init__(self, shm_path: str, num_clients: int, max_elems: int, max_dtype: np.dtype):
         self.shm_path = shm_path
-        self.num_clients = num_clients
+        self._num_clients = num_clients
         self.max_elems = max_elems
         self.max_dtype = np.dtype(max_dtype)
         self._header_size = 256  # fixed header size for cache alignment
@@ -84,6 +88,10 @@ class SharedMemoryTransport:
     def _validate_role(self, role: str):
         if role not in self._ROLE_MAP:
             raise ValueError(f"Invalid role: {role}")
+
+    @property
+    def num_clients(self) -> int:
+        return self._num_clients
 
     def close(self):
         self._mmap.close()
