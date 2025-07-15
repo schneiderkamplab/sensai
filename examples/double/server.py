@@ -9,7 +9,7 @@ def process_fn(tensor):
 
 @click.command()
 @click.option("--transport", type=click.Choice(["shm"]), default="shm", help="Transport type")
-@click.option("--path", required=True, help="Path to shared memory file or pipe")
+@click.option("--path", default="shm.bin", help="Path to shared memory file or pipe")
 @click.option("--num-clients", type=int, default=1, help="Number of client slots")
 @click.option("--max-elems", type=int, default=1024, help="Maximum number of elements per tensor")
 @click.option("--dtype", default="float32", help="Tensor dtype (e.g. float32, int32)")

@@ -22,7 +22,8 @@ classifiers = [
 dependencies = [
     'click',
     'numpy',
-    'torch'
+    'torch',
+    'transformers'
 ]
 
 [project.optional-dependencies]
