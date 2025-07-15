@@ -39,10 +39,12 @@ class SharedMemoryTransport:
 
     def write_tensor(self, slot_id: int, tensor: np.ndarray, role: str) -> None:
         self._validate_role(role)
+        header = self._headers[slot_id]
+        if header[0] != 1-self._ROLE_MAP[role]:
+            return None
         if tensor.size > self.max_elems:
             raise ValueError(f"Tensor too large: {tensor.size} > {self.max_elems}")
         self._datas[slot_id][:tensor.nbytes] = tensor.tobytes()
-        header = self._headers[slot_id]
         header[1] = self._encode_dtype(tensor.dtype)
         header[2] = tensor.ndim
         header[3] = tensor.size
