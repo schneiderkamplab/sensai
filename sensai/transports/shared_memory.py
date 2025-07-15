@@ -2,19 +2,11 @@ import mmap
 import numpy as np
 import os
 
-__all__ = ["SharedMemoryTransport"]
-
 from .transport_abc import Transport
 
-class SharedMemoryTransport(Transport):
+__all__ = ["SharedMemoryTransport"]
 
-    _DTYPE_MAP = {
-        0: np.float32,
-        1: np.float16,
-        2: np.int32,
-        3: np.int64,
-        4: np.uint8
-    }
+class SharedMemoryTransport(Transport):
 
     _ROLE_MAP = {
         "client": 0,
@@ -73,17 +65,6 @@ class SharedMemoryTransport(Transport):
     def is_ready(self, slot_id: int, role: str) -> bool:
         self._validate_role(role)
         return self._headers[slot_id][0] == self._ROLE_MAP[role]
-
-    def _encode_dtype(self, dtype: np.dtype) -> int:
-        for key, value in self._DTYPE_MAP.items():
-            if value == dtype.type:
-                return key
-        raise ValueError(f"Unsupported dtype: {dtype}")
-
-    def _resolve_dtype(self, dtype_enum: int):
-        if dtype_enum not in self._DTYPE_MAP:
-            raise ValueError(f"Invalid dtype enum: {dtype_enum}")
-        return self._DTYPE_MAP[dtype_enum]
 
     def _validate_role(self, role: str):
         if role not in self._ROLE_MAP:
