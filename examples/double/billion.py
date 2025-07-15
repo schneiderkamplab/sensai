@@ -6,7 +6,7 @@ import time
 
 @click.command()
 @click.option("--transport", type=click.Choice(["shm"]), default="shm", help="Transport type")
-@click.option("--path", default="shm_large.bin", help="Path to shared memory file")
+@click.option("--path", default="shm.bin", help="Path to shared memory file")
 @click.option("--slot-id", type=int, default=0, help="Client slot ID")
 @click.option("--num-clients", type=int, default=1, help="Number of client slots")
 @click.option("--dtype", default="float32", help="Tensor dtype (e.g. float32, int32)")
