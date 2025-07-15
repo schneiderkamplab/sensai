@@ -15,11 +15,13 @@ A knowledge distillation project that focuses on extracting and sampling logits 
 
 The project centers around the `TeacherLogitsServer` class which provides:
 
-1. **Tokenize** input text with padding and attention masks
+1. **Accept input_ids** tensors directly from clients with shape `[batch_size, seq_len]`
 2. **Extract logits** for prompt tokens (excluding the last position for causal LM)
-3. **Apply sampling filters** (temperature, top-k, top-p)
-4. **Sample tokens** according to probability distributions
-5. **Return results** as sparse COO tensors with shape `[num_samples, seq_len, vocab_size]`
+3. **Apply server-side sampling** using configured temperature, top-k, and top-p parameters
+4. **Sample tokens** according to probability distributions with nucleus filtering
+5. **Return results** as sparse COO tensors with shape `[num_samples, seq_len-1, vocab_size]`
+
+The server is configured once with sampling parameters, making client requests simple and efficient.
 
 ## Installation
 
@@ -63,9 +65,23 @@ python -m sensai.logits_server --model google/gemma-3-1b-it --device cuda --tran
 python -m sensai.logits_server --model microsoft/DialoGPT-medium --device auto
 ```
 
-#### Advanced Configuration
+#### Knowledge Distillation Configuration
 ```bash
-# Full configuration example
+# Standard distillation setup (recommended)
+python -m sensai.logits_server \
+    --model gpt2 \
+    --device cuda \
+    --num-samples 256 \
+    --temperature 1.0
+
+# High-sampling distillation for better student training
+python -m sensai.logits_server \
+    --model google/gemma-3-1b-it \
+    --device cuda \
+    --num-samples 512 \
+    --temperature 0.8
+
+# Advanced configuration with transport settings
 python -m sensai.logits_server \
     --model gpt2 \
     --device cuda \
@@ -73,13 +89,45 @@ python -m sensai.logits_server \
     --shm-path /dev/shm/teacher_logits \
     --num-clients 4 \
     --max-elems 1000000 \
+    --num-samples 256 \
+    --temperature 1.0 \
     --interval 0.001
+```
+
+#### Advanced Sampling (Optional)
+```bash
+# With nucleus sampling (experimental for distillation)
+python -m sensai.logits_server \
+    --model gpt2 \
+    --num-samples 256 \
+    --temperature 1.0 \
+    --top-p 0.9
+
+# With top-k sampling (experimental for distillation)
+python -m sensai.logits_server \
+    --model gpt2 \
+    --num-samples 256 \
+    --temperature 1.0 \
+    --top-k 50
 ```
 
 ### Command Line Options
 
+#### Core Configuration
 - `--model MODEL`: Model name or path to load (default: `google/gemma-3-1b-it`)
 - `--device DEVICE`: Device to load model on - `auto`, `cuda`, or `cpu` (default: `auto`)
+
+#### Sampling Parameters (Server-Side)
+- `--num-samples NUM_SAMPLES`: Number of samples to draw per position (default: `256`)
+- `--temperature TEMPERATURE`: Temperature for sampling - higher = more random (default: `1.0`)
+
+#### Advanced Sampling (Optional - Not Typical for Distillation)
+- `--top-p TOP_P`: Nucleus sampling threshold (default: `1.0` - disabled)
+- `--top-k TOP_K`: Top-k sampling, 0 = disabled (default: `0` - disabled)
+
+> **Note**: Top-k and nucleus sampling are experimental for distillation. Most knowledge distillation scenarios work best with `temperature` control only, as these filters can remove important probability mass that students need to learn from.
+
+#### Transport Configuration
 - `--transport {named_pipe,shared_memory}`: Transport type to use (default: `named_pipe`)
 - `--num-clients NUM_CLIENTS`: Number of client slots (default: `4`)
 - `--pipe-dir PIPE_DIR`: Directory for named pipes (auto-generated if not specified)
@@ -89,18 +137,23 @@ python -m sensai.logits_server \
 
 ### Request Format
 
-The server accepts structured requests via the transport layer:
+The server accepts `input_ids` tensors directly (sampling parameters are configured server-side):
 
 ```python
-# Request tensor format: [request_type, num_samples, temperature, top_p, top_k, ...text_bytes]
-request_tensor = np.array([
-    0,          # request_type: 0=sample_to_sparse_coo, 1=get_prompt_logits
-    256,        # num_samples
-    0.8,        # temperature
-    0.9,        # top_p
-    50,         # top_k
-    # ... followed by UTF-8 encoded text bytes
-], dtype=np.float32)
+import torch
+import numpy as np
+
+# Tokenize text to get input_ids
+text = "The quick brown fox jumps over"
+input_ids = tokenizer(text, return_tensors="pt")["input_ids"]
+
+# Send as numpy array with shape [batch_size, seq_len]
+request_tensor = input_ids.numpy()  # Shape: [1, seq_len]
+
+# For batch processing, stack multiple sequences
+batch_texts = ["Text one", "Text two", "Text three"]
+batch_input_ids = tokenizer(batch_texts, return_tensors="pt", padding=True)["input_ids"]
+batch_request = batch_input_ids.numpy()  # Shape: [3, seq_len]
 ```
 
 ### Client Usage
@@ -108,19 +161,34 @@ request_tensor = np.array([
 ```python
 from sensai.client import SensAIClient
 from sensai.transports import NamedPipeTransport
+from transformers import AutoTokenizer
+import torch
 import numpy as np
+
+# Initialize tokenizer (must match server model)
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
 # Create transport (must match server configuration)
 transport = NamedPipeTransport(pipe_dir="/tmp/sensai_teacher_xyz", num_clients=4)
 client = SensAIClient(transport, slot_id=0)
 
-# Prepare request
+# Prepare request with input_ids
 text = "The quick brown fox"
-text_bytes = text.encode('utf-8')
-request = np.array([0, 256, 0.8, 0.9, 50] + list(text_bytes) + [0]*100, dtype=np.float32)
+input_ids = tokenizer(text, return_tensors="pt")["input_ids"]
+request = input_ids.numpy()  # Shape: [1, seq_len]
 
-# Send request and get response
+# Send request and get sparse tensor response
 response = client.send_tensor(request)
+
+# Response is flattened dense tensor - reshape to [num_samples, seq_len-1, vocab_size]
+# (Note: seq_len-1 because we predict next tokens for causal LM)
+vocab_size = 50257  # GPT-2 vocab size
+num_samples = 256   # Server configuration
+seq_len = input_ids.shape[1] - 1
+response_tensor = response.reshape(num_samples, seq_len, vocab_size)
+
+print(f"Received logits shape: {response_tensor.shape}")
+print(f"Teacher sampled {num_samples} tokens for {seq_len} positions")
 ```
 
 ## Development
