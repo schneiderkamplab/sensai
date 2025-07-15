@@ -22,14 +22,20 @@ class SharedMemoryTransport(Transport):
         self._header_size = 256  # fixed header size for cache alignment
         self._slot_size = self._header_size + max_elems * self.max_dtype.itemsize
         self._fd = os.open(shm_path, os.O_CREAT | os.O_RDWR)
-        os.ftruncate(self._fd, self.num_clients * self._slot_size)
-        self._mmap = mmap.mmap(self._fd, self.num_clients * self._slot_size)
+        os.ftruncate(self._fd, self._num_clients * self._slot_size)
+        self._mmap = mmap.mmap(self._fd, self._num_clients * self._slot_size)
         self._headers = {}
         self._datas = {}
-        for slot_id in range(self.num_clients):
+        self._init(0)
+
+    def _init(self, from_slot):
+        self._debug(f"Initializing shared memory transport with {self._num_clients} clients starting from slot {from_slot}")
+        for slot_id in range(from_slot, self._num_clients):
             offset = slot_id * self._slot_size
             header_buf = memoryview(self._mmap)[offset : offset + self._header_size]
             data_buf = memoryview(self._mmap)[offset + self._header_size : offset + self._slot_size]
+            self._debug(f"Setting up slot {slot_id} with header at {offset} and data at {offset + self._header_size}")
+            self._debug(f"Header buffer size: {len(header_buf)}, Data buffer size: {len(data_buf)}")
             self._headers[slot_id] = np.frombuffer(header_buf, dtype=np.int64)
             self._headers[slot_id][0] = self._ROLE_MAP["client"]
             self._datas[slot_id] = data_buf
@@ -39,7 +45,7 @@ class SharedMemoryTransport(Transport):
             print(f"[SharedMemoryTransport] {msg}")
 
     def write_tensor(self, slot_id: int, tensor: np.ndarray, role: str) -> None:
-        self._validate_role(role)
+        self._validate(slot_id, role)
         header = self._headers[slot_id]
         self._debug(f"{role} will write tensor of shape {tensor.shape} to slot {slot_id} with header {header[:8]}")
         if tensor.size > self.max_elems:
@@ -53,7 +59,7 @@ class SharedMemoryTransport(Transport):
         self._debug(f"{role} wrote tensor of shape {tensor.shape} to slot {slot_id} with header {header[:8]}")
 
     def read_tensor(self, slot_id: int, role: str) -> np.ndarray | None:
-        self._validate_role(role)
+        self._validate(slot_id, role)
         header = self._headers[slot_id]
         if header[0] != self._ROLE_MAP[role]:
             self._debug(f"{role} found no tensor to read in slot {slot_id}")
@@ -72,13 +78,15 @@ class SharedMemoryTransport(Transport):
         return tensor
 
     def is_ready(self, slot_id: int, role: str) -> bool:
-        self._validate_role(role)
+        self._validate(slot_id, role)
         ready = self._headers[slot_id][0] == self._ROLE_MAP[role]
         if ready:
             self._debug(f"{role} is ready to read from slot {slot_id}")
         return ready
 
-    def _validate_role(self, role: str):
+    def _validate(self, slot_id: int, role: str):
+        if slot_id < 0 or slot_id >= self._num_clients:
+            raise ValueError(f"Invalid slot_id: {slot_id}, must be in range [0, {self._num_clients})")
         if role not in self._ROLE_MAP:
             raise ValueError(f"Invalid role: {role}")
 
