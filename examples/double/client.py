@@ -3,9 +3,10 @@ import numpy as np
 from sensai.client import SensAIClient
 from sensai.transports.named_pipe import NamedPipeTransport
 from sensai.transports.shared_memory import SharedMemoryTransport
+from sensai.transports.unix_socket import UnixSocketTransport
 
 @click.command()
-@click.option("--transport", type=click.Choice(["shm", "pipe"]), default="shm", help="Transport type")
+@click.option("--transport", type=click.Choice(["shm", "pipe", "socket"]), default="shm", help="Transport type")
 @click.option("--path", default="shm.bin", help="Path to shared memory file or pipe")
 @click.option("--slot-id", type=int, default=0, help="Client slot ID")
 @click.option("--num-clients", type=int, default=1, help="Number of client slots")
@@ -20,7 +21,9 @@ def run_client(transport, path, slot_id, num_clients, max_elems, dtype, values):
     if transport == "shm":
         ctx = SharedMemoryTransport(path, num_clients=num_clients, max_elems=max_elems, max_dtype=dtype)
     elif transport == "pipe":
-        ctx = NamedPipeTransport(path, num_clients=num_clients)    
+        ctx = NamedPipeTransport(path, num_clients=num_clients)
+    elif transport == "socket":
+        ctx = UnixSocketTransport(path, num_clients=num_clients, server_mode=False)
     with ctx as t:
         client = SensAIClient(t, slot_id=slot_id)
         print(f"[Client] Sending tensor: {tensor}")
