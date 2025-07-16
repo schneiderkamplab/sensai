@@ -412,29 +412,7 @@ if __name__ == "__main__":
     import os
     import tempfile
     from .server import SensAIServer
-    from .transports import NamedPipeTransport, SharedMemoryTransport
-    
-    def create_transport(transport_type: str, **kwargs):
-        """Create transport based on type and arguments"""
-        if transport_type == "named_pipe":
-            pipe_dir = kwargs.get("pipe_dir", tempfile.mkdtemp(prefix="sensai_teacher_"))
-            num_clients = kwargs.get("num_clients", 4)
-            return NamedPipeTransport(pipe_dir=pipe_dir, num_clients=num_clients), pipe_dir
-        
-        elif transport_type == "shared_memory":
-            shm_path = kwargs.get("shm_path", "/tmp/sensai_teacher_shm")
-            num_clients = kwargs.get("num_clients", 4)
-            max_elems = kwargs.get("max_elems", 1000000)
-            max_dtype = kwargs.get("max_dtype", np.float32)
-            return SharedMemoryTransport(
-                shm_path=shm_path, 
-                num_clients=num_clients, 
-                max_elems=max_elems, 
-                max_dtype=max_dtype
-            ), shm_path
-        
-        else:
-            raise ValueError(f"Unknown transport type: {transport_type}")
+    from .utils import create_transport
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Teacher Logits Server")

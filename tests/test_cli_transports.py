@@ -12,6 +12,7 @@ import numpy as np
 
 from sensai.transports import NamedPipeTransport, SharedMemoryTransport
 from sensai.server import SensAIServer
+from sensai.utils import create_transport
 
 
 class TestCLITransports:
@@ -69,27 +70,27 @@ class TestCLITransports:
                 pass
     
     def test_transport_factory_function(self):
-        """Test the transport factory function logic"""
-        # We need to extract the create_transport function to test it
-        # Since it's inside __main__, we'll test the logic here
-        
-        # Test named pipe creation logic
+        """Test the create_transport function from utils module"""
+        # Test named pipe creation
         pipe_dir = tempfile.mkdtemp(prefix='test_sensai_')
         try:
-            transport = NamedPipeTransport(pipe_dir=pipe_dir, num_clients=3)
+            transport, cleanup_path = create_transport(
+                "named_pipe",
+                pipe_dir=pipe_dir,
+                num_clients=3
+            )
             assert transport.num_clients == 3
-            cleanup_path = pipe_dir
-            
-            # Verify cleanup path is correct
             assert cleanup_path == pipe_dir
+            assert isinstance(transport, NamedPipeTransport)
             
         finally:
             shutil.rmtree(pipe_dir, ignore_errors=True)
             
-        # Test shared memory creation logic
+        # Test shared memory creation
         shm_path = "/tmp/test_sensai_factory"
         try:
-            transport = SharedMemoryTransport(
+            transport, cleanup_path = create_transport(
+                "shared_memory",
                 shm_path=shm_path,
                 num_clients=3,
                 max_elems=500000,
@@ -97,10 +98,8 @@ class TestCLITransports:
             )
             assert transport.num_clients == 3
             assert transport.max_elems == 500000
-            cleanup_path = shm_path
-            
-            # Verify cleanup path is correct
             assert cleanup_path == shm_path
+            assert isinstance(transport, SharedMemoryTransport)
             
             try:
                 transport.close()
@@ -113,6 +112,10 @@ class TestCLITransports:
                 os.unlink(shm_path)
             except:
                 pass
+        
+        # Test invalid transport type
+        with pytest.raises(ValueError, match="Unknown transport type"):
+            create_transport("invalid_transport")
     
     def test_cli_help_output(self):
         """Test that CLI help works correctly"""
