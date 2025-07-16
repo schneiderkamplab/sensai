@@ -68,12 +68,14 @@ class TeacherLogitsServer:
         self.top_k = top_k
         
     
-    def get_logits_from_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def get_logits_from_input_ids(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Extract logits from input_ids tensor directly.
         
         Args:
             input_ids: Tensor of shape [batch_size, seq_len] containing token IDs
+            attention_mask: Optional tensor of shape [batch_size, seq_len] containing attention mask.
+                          If None, assumes all tokens are valid (no padding)
             
         Returns:
             Tensor of shape [batch_size, seq_len-1, vocab_size] containing logits for prompt tokens
@@ -83,8 +85,11 @@ class TeacherLogitsServer:
         
         batch_size, seq_len = input_ids.shape
         
-        # Create attention mask (assume all tokens are valid, no padding)
-        attention_mask = torch.ones_like(input_ids)
+        # Create attention mask if not provided (assume all tokens are valid, no padding)
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids)
+        elif attention_mask.dim() == 1:
+            attention_mask = attention_mask.unsqueeze(0)  # Add batch dimension
         
         with torch.no_grad():
             # Move to device
@@ -106,12 +111,14 @@ class TeacherLogitsServer:
             
             return prompt_logits.cpu()
     
-    def process_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def process_input_ids(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Process input_ids and return logits tensor.
         
         Args:
             input_ids: Tensor of shape [batch_size, seq_len] containing token IDs
+            attention_mask: Optional tensor of shape [batch_size, seq_len] containing attention mask.
+                          If None, assumes all tokens are valid (no padding)
             
         Returns:
             If num_samples is None: Tensor of shape [batch_size, seq_len-1, vocab_size] containing full logits
@@ -120,7 +127,7 @@ class TeacherLogitsServer:
             - values: Tensor of shape [batch_size, seq_len-1, num_samples] containing logit values
         """
         # Get logits from input_ids
-        logits = self.get_logits_from_input_ids(input_ids)  # [batch_size, seq_len-1, vocab_size]
+        logits = self.get_logits_from_input_ids(input_ids, attention_mask)  # [batch_size, seq_len-1, vocab_size]
         
         # If num_samples is None, return full logits
         if self.num_samples is None:
@@ -234,23 +241,34 @@ class TeacherLogitsServer:
         return sampled_token_ids, sampled_logit_values
 
 
-def process_logits_request(teacher_server: TeacherLogitsServer, input_tensor: np.ndarray) -> List[np.ndarray]:
+def process_logits_request(teacher_server: TeacherLogitsServer, input_data) -> List[np.ndarray]:
     """
-    Process a logits request. Input tensor should be input_ids of shape [batch_size, seq_len].
+    Process a logits request. Input can be either a single tensor (input_ids) or list of tensors (input_ids, attention_mask).
     
     Args:
         teacher_server: TeacherLogitsServer instance to process the request
-        input_tensor: NumPy array containing input_ids (token IDs)
+        input_data: Either:
+                   - Single NumPy array containing input_ids (token IDs) for backward compatibility
+                   - List of NumPy arrays [input_ids, attention_mask] for dual tensor input
         
     Returns:
         If num_samples is None: List containing [logits] as NumPy array
         If num_samples is set: List containing [indices, values] as NumPy arrays
     """
     try:
-        # Convert input to torch tensor and reshape to [batch_size, seq_len]
-        input_ids = torch.from_numpy(input_tensor).long()
+        # Handle both single tensor and list of tensors
+        if isinstance(input_data, np.ndarray):
+            # Single tensor case - assume it's input_ids
+            input_ids = torch.from_numpy(input_data).long()
+            attention_mask = None
+        elif isinstance(input_data, list) and len(input_data) >= 1:
+            # List of tensors case
+            input_ids = torch.from_numpy(input_data[0]).long()
+            attention_mask = torch.from_numpy(input_data[1]).long() if len(input_data) > 1 else None
+        else:
+            raise ValueError("Input must be either a numpy array or list of numpy arrays")
         
-        # Handle different input shapes
+        # Handle different input shapes for input_ids
         if input_ids.dim() == 1:
             # Single sequence: [seq_len] -> [1, seq_len]
             input_ids = input_ids.unsqueeze(0)
@@ -258,11 +276,22 @@ def process_logits_request(teacher_server: TeacherLogitsServer, input_tensor: np
             # Flatten to 2D: [batch_size, seq_len]
             input_ids = input_ids.view(-1, input_ids.shape[-1])
         
+        # Handle different input shapes for attention_mask if provided
+        if attention_mask is not None:
+            if attention_mask.dim() == 1:
+                # Single sequence: [seq_len] -> [1, seq_len]
+                attention_mask = attention_mask.unsqueeze(0)
+            elif attention_mask.dim() > 2:
+                # Flatten to 2D: [batch_size, seq_len]
+                attention_mask = attention_mask.view(-1, attention_mask.shape[-1])
+        
         batch_size, seq_len = input_ids.shape
         print(f"Processing input_ids: batch_size={batch_size}, seq_len={seq_len}")
+        if attention_mask is not None:
+            print(f"Processing attention_mask: shape={attention_mask.shape}")
         
-        # Process input_ids
-        result = teacher_server.process_input_ids(input_ids)
+        # Process input_ids with optional attention_mask
+        result = teacher_server.process_input_ids(input_ids, attention_mask)
         
         if teacher_server.num_samples is None:
             # Return full logits

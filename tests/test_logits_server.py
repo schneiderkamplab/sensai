@@ -35,6 +35,29 @@ class TestTeacherLogitsServer:
         # Check that logits are finite
         assert torch.isfinite(logits).all()
     
+    def test_get_logits_from_input_ids_with_attention_mask(self, server):
+        """Test get_logits_from_input_ids with attention mask."""
+        # Create input_ids with padding
+        input_ids = torch.tensor([[1, 2, 3, 4, 0]])  # [batch_size=1, seq_len=5] with padding token 0
+        attention_mask = torch.tensor([[1, 1, 1, 1, 0]])  # [batch_size=1, seq_len=5] mask out padding
+        
+        logits = server.get_logits_from_input_ids(input_ids, attention_mask)
+        
+        # Check shape
+        assert logits.dim() == 3
+        assert logits.shape == (1, 4, server.vocab_size)  # [batch_size, seq_len-1, vocab_size]
+        
+        # Check that logits are finite
+        assert torch.isfinite(logits).all()
+        
+        # Test with batch and attention mask
+        batch_input_ids = torch.tensor([[1, 2, 3, 4, 0], [5, 6, 7, 0, 0]])  # Different padding
+        batch_attention_mask = torch.tensor([[1, 1, 1, 1, 0], [1, 1, 1, 0, 0]])
+        
+        batch_logits = server.get_logits_from_input_ids(batch_input_ids, batch_attention_mask)
+        assert batch_logits.shape == (2, 4, server.vocab_size)  # [batch_size, seq_len-1, vocab_size]
+        assert torch.isfinite(batch_logits).all()
+    
     def test_get_logits_from_input_ids_batch(self, server):
         """Test get_logits_from_input_ids with batch input."""
         # Create batch input_ids
@@ -67,6 +90,13 @@ class TestTeacherLogitsServer:
         assert isinstance(result, torch.Tensor)
         assert result.shape == (1, 4, full_logits_server.vocab_size)  # [batch_size, seq_len-1, vocab_size]
         assert torch.isfinite(result).all()
+        
+        # Test with attention mask
+        attention_mask = torch.tensor([[1, 1, 1, 1, 0]])  # [batch_size=1, seq_len=5]
+        result_with_mask = full_logits_server.process_input_ids(input_ids, attention_mask)
+        assert isinstance(result_with_mask, torch.Tensor)
+        assert result_with_mask.shape == (1, 4, full_logits_server.vocab_size)
+        assert torch.isfinite(result_with_mask).all()
         
         # Test with num_samples=0 (should also return full logits)
         zero_samples_server = TeacherLogitsServer(
@@ -355,6 +385,35 @@ class TestProcessLogitsRequest:
         # Check that values are finite
         assert np.all(np.isfinite(values))
     
+    def test_process_logits_request_with_attention_mask(self, server):
+        """Test process_logits_request with attention mask."""
+        # Create sample input_ids and attention_mask
+        input_ids = np.array([[1, 2, 3, 4, 0], [5, 6, 7, 0, 0]], dtype=np.int32)  # With padding
+        attention_mask = np.array([[1, 1, 1, 1, 0], [1, 1, 1, 0, 0]], dtype=np.int32)  # Mask padding
+        
+        # Call the function with list of tensors
+        result = process_logits_request(server, [input_ids, attention_mask])
+        
+        # Verify result structure for sampling mode
+        assert isinstance(result, list)
+        assert len(result) == 2  # [indices, values]
+        
+        indices, values = result
+        assert isinstance(indices, np.ndarray)
+        assert isinstance(values, np.ndarray)
+        
+        # Check shapes
+        expected_shape = (2, 4, server.num_samples)  # [batch_size, seq_len-1, num_samples]
+        assert indices.shape == expected_shape
+        assert values.shape == expected_shape
+        
+        # Check that indices are valid vocabulary indices
+        assert np.all(indices >= 0)
+        assert np.all(indices < server.vocab_size)
+        
+        # Check that values are finite
+        assert np.all(np.isfinite(values))
+    
     def test_process_logits_request_single_sequence(self, server):
         """Test process_logits_request with single sequence."""
         # Create single sequence input_ids
@@ -445,6 +504,18 @@ class TestProcessLogitsRequest:
         
         # Check that logits are finite
         assert np.all(np.isfinite(logits))
+        
+        # Test with attention mask in full logits mode
+        attention_mask = np.array([[1, 1, 1, 1, 0]], dtype=np.int32)
+        result_with_mask = process_logits_request(full_logits_server, [input_ids, attention_mask])
+        
+        assert isinstance(result_with_mask, list)
+        assert len(result_with_mask) == 1  # [logits]
+        
+        logits_with_mask = result_with_mask[0]
+        assert isinstance(logits_with_mask, np.ndarray)
+        assert logits_with_mask.shape == expected_shape
+        assert np.all(np.isfinite(logits_with_mask))
     
     def test_process_logits_request_error_handling(self, server):
         """Test error handling in process_logits_request."""
