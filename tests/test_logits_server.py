@@ -21,49 +21,114 @@ class TestTeacherLogitsServer:
         assert server.vocab_size > 0
         assert server.tokenizer.pad_token is not None
     
-    def test_get_prompt_logits_single_text(self, server):
-        """Test get_prompt_logits with a single text input."""
-        text = "The quick brown fox"
-        logits_list = server.get_prompt_logits(text)
+    def test_get_logits_from_input_ids_single_sequence(self, server):
+        """Test get_logits_from_input_ids with a single sequence."""
+        # Create input_ids directly
+        input_ids = torch.tensor([[1, 2, 3, 4, 5]])  # [batch_size=1, seq_len=5]
         
-        assert len(logits_list) == 1
-        logits = logits_list[0]
+        logits = server.get_logits_from_input_ids(input_ids)
         
         # Check shape
-        assert logits.dim() == 2
-        assert logits.shape[1] == server.vocab_size
-        
-        # Check that we have reasonable number of tokens
-        assert logits.shape[0] > 0
-        assert logits.shape[0] < 20  # Should be less than 20 tokens for this text
+        assert logits.dim() == 3
+        assert logits.shape == (1, 4, server.vocab_size)  # [batch_size, seq_len-1, vocab_size]
         
         # Check that logits are finite
         assert torch.isfinite(logits).all()
     
-    def test_get_prompt_logits_multiple_texts(self, server):
-        """Test get_prompt_logits with multiple text inputs."""
-        texts = ["Hello world", "The quick brown fox", "A"]
-        logits_list = server.get_prompt_logits(texts)
+    def test_get_logits_from_input_ids_batch(self, server):
+        """Test get_logits_from_input_ids with batch input."""
+        # Create batch input_ids
+        input_ids = torch.tensor([[1, 2, 3, 4], [5, 6, 7, 8]])  # [batch_size=2, seq_len=4]
         
-        assert len(logits_list) == 3
+        logits = server.get_logits_from_input_ids(input_ids)
         
-        # Check each logits tensor
-        for i, logits in enumerate(logits_list):
-            assert logits.dim() == 2
-            assert logits.shape[1] == server.vocab_size
-            assert logits.shape[0] > 0
-            assert torch.isfinite(logits).all()
+        # Check shape
+        assert logits.dim() == 3
+        assert logits.shape == (2, 3, server.vocab_size)  # [batch_size, seq_len-1, vocab_size]
+        
+        # Check that logits are finite
+        assert torch.isfinite(logits).all()
     
-    def test_get_prompt_logits_empty_input(self, server):
-        """Test get_prompt_logits with empty input."""
-        result = server.get_prompt_logits([])
-        assert result == []
+    def test_process_input_ids_full_logits_mode(self, server):
+        """Test process_input_ids with full logits mode (no sampling)."""
+        # Test with num_samples=None for full logits
+        full_logits_server = TeacherLogitsServer(
+            "google/gemma-3-1b-it", 
+            device="cpu", 
+            num_samples=None
+        )
+        
+        # Create sample input_ids
+        input_ids = torch.tensor([[1, 2, 3, 4, 5]])  # [batch_size=1, seq_len=5]
+        
+        result = full_logits_server.process_input_ids(input_ids)
+        
+        # Should return full logits tensor directly
+        assert isinstance(result, torch.Tensor)
+        assert result.shape == (1, 4, full_logits_server.vocab_size)  # [batch_size, seq_len-1, vocab_size]
+        assert torch.isfinite(result).all()
+        
+        # Test with num_samples=0 (should also return full logits)
+        zero_samples_server = TeacherLogitsServer(
+            "google/gemma-3-1b-it", 
+            device="cpu", 
+            num_samples=0
+        )
+        result_zero = zero_samples_server.process_input_ids(input_ids)
+        assert isinstance(result_zero, torch.Tensor)
+        assert result_zero.shape == (1, 4, zero_samples_server.vocab_size)
+        
+        # Test with num_samples=-1 (should also return full logits)
+        neg_samples_server = TeacherLogitsServer(
+            "google/gemma-3-1b-it", 
+            device="cpu", 
+            num_samples=-1
+        )
+        result_neg = neg_samples_server.process_input_ids(input_ids)
+        assert isinstance(result_neg, torch.Tensor)
+        assert result_neg.shape == (1, 4, neg_samples_server.vocab_size)
+        
+        # Test batch processing in full logits mode
+        batch_input_ids = torch.tensor([[1, 2, 3], [4, 5, 6]])  # [batch_size=2, seq_len=3]
+        batch_result = full_logits_server.process_input_ids(batch_input_ids)
+        assert isinstance(batch_result, torch.Tensor)
+        assert batch_result.shape == (2, 2, full_logits_server.vocab_size)  # [batch_size, seq_len-1, vocab_size]
+    
+    def test_input_ids_processing_integration(self, server):
+        """Test the integration of input_ids processing functionality (from test_input_ids_server.py)."""
+        # Test tokenization to get input_ids
+        text = "The quick brown fox jumps over"
+        inputs = server.tokenizer(text, return_tensors="pt")
+        input_ids = inputs["input_ids"]
+        
+        # Test get_logits_from_input_ids
+        logits = server.get_logits_from_input_ids(input_ids)
+        expected_shape = (input_ids.shape[0], input_ids.shape[1]-1, server.vocab_size)
+        assert logits.shape == expected_shape
+        
+        # Test process_input_ids
+        result = server.process_input_ids(input_ids)
+        assert isinstance(result, tuple)
+        indices, values = result
+        expected_indices_shape = (input_ids.shape[0], input_ids.shape[1]-1, server.num_samples)
+        assert indices.shape == expected_indices_shape
+        assert values.shape == expected_indices_shape
+        
+        # Test batch processing
+        batch_input_ids = torch.cat([input_ids, input_ids], dim=0)  # Create batch of 2
+        batch_logits = server.get_logits_from_input_ids(batch_input_ids)
+        expected_batch_shape = (2, input_ids.shape[1]-1, server.vocab_size)
+        assert batch_logits.shape == expected_batch_shape
+        
+        # Test the request processing function format
+        input_tensor = input_ids.numpy().flatten()  # Flatten for transport
+        recovered_input_ids = torch.from_numpy(input_tensor).long().view(1, -1)
+        assert torch.equal(input_ids, recovered_input_ids)
     
     def test_sample_from_logits_basic(self, server):
         """Test basic sampling from logits."""
-        text = "The quick brown"
-        logits_list = server.get_prompt_logits(text)
-        logits = logits_list[0]
+        # Create sample logits directly
+        logits = torch.randn(3, server.vocab_size)  # [seq_len=3, vocab_size]
         
         num_samples = 5
         sampled_tokens, sampled_logit_values = server.sample_from_logits(
@@ -83,9 +148,8 @@ class TestTeacherLogitsServer:
     
     def test_sample_from_logits_temperature(self, server):
         """Test sampling with different temperatures."""
-        text = "Hello"
-        logits_list = server.get_prompt_logits(text)
-        logits = logits_list[0]
+        # Create sample logits directly
+        logits = torch.randn(2, server.vocab_size)  # [seq_len=2, vocab_size]
         
         # Sample with low temperature (more deterministic)
         tokens_low, _ = server.sample_from_logits(logits, num_samples=100, temperature=0.1)
@@ -99,9 +163,8 @@ class TestTeacherLogitsServer:
     
     def test_sample_from_logits_top_k(self, server):
         """Test sampling with top-k filtering."""
-        text = "Hello"
-        logits_list = server.get_prompt_logits(text)
-        logits = logits_list[0]
+        # Create sample logits directly
+        logits = torch.randn(2, server.vocab_size)  # [seq_len=2, vocab_size]
         
         # Sample with top-k
         tokens, _ = server.sample_from_logits(logits, num_samples=100, top_k=10)
@@ -112,9 +175,8 @@ class TestTeacherLogitsServer:
     
     def test_sample_from_logits_top_p(self, server):
         """Test sampling with top-p (nucleus) filtering."""
-        text = "Hello"
-        logits_list = server.get_prompt_logits(text)
-        logits = logits_list[0]
+        # Create sample logits directly
+        logits = torch.randn(2, server.vocab_size)  # [seq_len=2, vocab_size]
         
         # Sample with top-p
         tokens, _ = server.sample_from_logits(logits, num_samples=100, top_p=0.9)
@@ -124,11 +186,15 @@ class TestTeacherLogitsServer:
         assert (tokens < server.vocab_size).all()
     
     def test_process_input_ids_basic(self, server):
-        """Test basic input_ids processing."""
+        """Test basic input_ids processing with sampling."""
         # Create sample input_ids
         input_ids = torch.tensor([[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]])  # [batch_size=2, seq_len=5]
         
-        indices, values = server.process_input_ids(input_ids)
+        result = server.process_input_ids(input_ids)
+        
+        # Should return tuple for sampling mode
+        assert isinstance(result, tuple)
+        indices, values = result
         
         # Check shapes
         expected_shape = (2, 4, server.num_samples)  # [batch_size, seq_len-1, num_samples]
@@ -147,7 +213,11 @@ class TestTeacherLogitsServer:
         # Create single sequence input_ids
         input_ids = torch.tensor([1, 2, 3, 4])  # [seq_len=4]
         
-        indices, values = server.process_input_ids(input_ids)
+        result = server.process_input_ids(input_ids)
+        
+        # Should return tuple for sampling mode
+        assert isinstance(result, tuple)
+        indices, values = result
         
         # Check shapes (should add batch dimension)
         expected_shape = (1, 3, server.num_samples)  # [batch_size=1, seq_len-1, num_samples]
@@ -161,19 +231,18 @@ class TestTeacherLogitsServer:
         # Check that values are finite
         assert torch.isfinite(values).all()
     
-    def test_logits_consistency_with_parallel_model(self, server):
-        """Test that sampled logits appear in expected positions by running model in parallel."""
-        text = "The quick brown fox"
+    def test_logits_consistency_with_get_logits_from_input_ids(self, server):
+        """Test that sampled logits appear in expected positions by comparing with get_logits_from_input_ids."""
+        # Create input_ids directly
+        input_ids = torch.tensor([[1, 2, 3, 4, 5]])  # [batch_size=1, seq_len=5]
         
         # Get logits directly
-        logits_list = server.get_prompt_logits(text)
-        original_logits = logits_list[0]
-        
-        # Create input_ids for the same text
-        input_ids = server.tokenizer(text, return_tensors="pt").input_ids
+        original_logits = server.get_logits_from_input_ids(input_ids)  # [batch_size, seq_len-1, vocab_size]
         
         # Get sampled indices and values
-        indices, values = server.process_input_ids(input_ids)
+        result = server.process_input_ids(input_ids)
+        assert isinstance(result, tuple)
+        indices, values = result
         
         # Check a few samples to verify consistency
         batch_size, seq_len, num_samples = indices.shape
@@ -184,37 +253,34 @@ class TestTeacherLogitsServer:
                     sampled_logit = values[batch_idx, pos_idx, sample_idx].item()
                     
                     # Get the original logit value at this position and token
-                    original_logit = original_logits[pos_idx, token_idx].item()
+                    original_logit = original_logits[batch_idx, pos_idx, token_idx].item()
                     
                     # They should match (within floating point precision)
                     assert abs(sampled_logit - original_logit) < 1e-4, \
                         f"Logit mismatch at pos {pos_idx}, token {token_idx}: {sampled_logit} vs {original_logit}"
     
-    
     def test_edge_cases(self, server):
         """Test edge cases and error conditions."""
-        # Test with single token
-        single_token_text = "A"
-        result = server.get_prompt_logits(single_token_text)
-        assert len(result) == 1
-        assert result[0].shape[0] >= 0  # Should handle single token case
-        
-        # Test with very short text using input_ids
+        # Test with very short sequence using input_ids
         input_ids = torch.tensor([[1, 2]])  # Very short sequence
-        indices, values = server.process_input_ids(input_ids)
+        result = server.process_input_ids(input_ids)
+        assert isinstance(result, tuple)
+        indices, values = result
         assert indices.shape == (1, 1, server.num_samples)  # [batch_size=1, seq_len-1=1, num_samples]
         assert values.shape == (1, 1, server.num_samples)
         
         # Test with minimum viable input
         input_ids = torch.tensor([[1]])  # Single token
-        indices, values = server.process_input_ids(input_ids)
+        result = server.process_input_ids(input_ids)
+        assert isinstance(result, tuple)
+        indices, values = result
         assert indices.shape == (1, 1, server.num_samples)  # Single token still produces output
         assert values.shape == (1, 1, server.num_samples)
     
     def test_deterministic_sampling(self, server):
         """Test that sampling with very low temperature gives more deterministic results."""
-        text = "Hello world"
-        input_ids = server.tokenizer(text, return_tensors="pt").input_ids
+        # Create sample input_ids
+        input_ids = torch.tensor([[1, 2, 3, 4, 5]])  # [batch_size=1, seq_len=5]
         
         # Create a server with very low temperature
         low_temp_server = TeacherLogitsServer(
@@ -225,8 +291,12 @@ class TestTeacherLogitsServer:
         )
         
         # Sample twice with very low temperature
-        indices1, values1 = low_temp_server.process_input_ids(input_ids)
-        indices2, values2 = low_temp_server.process_input_ids(input_ids)
+        result1 = low_temp_server.process_input_ids(input_ids)
+        result2 = low_temp_server.process_input_ids(input_ids)
+        
+        assert isinstance(result1, tuple) and isinstance(result2, tuple)
+        indices1, values1 = result1
+        indices2, values2 = result2
         
         # Results should have the same shape
         assert indices1.shape == indices2.shape
@@ -258,14 +328,14 @@ class TestProcessLogitsRequest:
         return TeacherLogitsServer("google/gemma-3-1b-it", device="cpu")
     
     def test_process_logits_request_basic(self, server):
-        """Test basic functionality of process_logits_request."""
+        """Test basic functionality of process_logits_request with sampling."""
         # Create sample input_ids
         input_ids = np.array([[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]], dtype=np.int32)
         
         # Call the function
         result = process_logits_request(server, input_ids)
         
-        # Verify result structure
+        # Verify result structure for sampling mode
         assert isinstance(result, list)
         assert len(result) == 2  # [indices, values]
         
@@ -293,7 +363,7 @@ class TestProcessLogitsRequest:
         # Call the function
         result = process_logits_request(server, input_ids)
         
-        # Verify result structure
+        # Verify result structure for sampling mode
         assert isinstance(result, list)
         assert len(result) == 2  # [indices, values]
         
@@ -323,10 +393,15 @@ class TestProcessLogitsRequest:
         
         # Call the method directly
         input_ids_torch = torch.from_numpy(input_ids).long()
-        indices_direct, values_direct = server.process_input_ids(input_ids_torch)
+        result_direct = server.process_input_ids(input_ids_torch)
+        
+        # Both should return tuples for sampling mode
+        assert isinstance(result_function, list) and len(result_function) == 2
+        assert isinstance(result_direct, tuple) and len(result_direct) == 2
         
         # Compare results structure (not exact values due to sampling)
         indices_function, values_function = result_function
+        indices_direct, values_direct = result_direct
         
         # Check shapes are the same
         assert indices_function.shape == indices_direct.numpy().shape
@@ -341,6 +416,35 @@ class TestProcessLogitsRequest:
         # Check that both produce finite values
         assert np.all(np.isfinite(values_function))
         assert torch.all(torch.isfinite(values_direct))
+    
+    def test_process_logits_request_full_logits_mode(self, server):
+        """Test process_logits_request with full logits mode (no sampling)."""
+        # Create server with num_samples=None for full logits
+        full_logits_server = TeacherLogitsServer(
+            "google/gemma-3-1b-it", 
+            device="cpu", 
+            num_samples=None
+        )
+        
+        # Create sample input_ids
+        input_ids = np.array([[1, 2, 3, 4, 5]], dtype=np.int32)
+        
+        # Call the function
+        result = process_logits_request(full_logits_server, input_ids)
+        
+        # Verify result structure for full logits mode
+        assert isinstance(result, list)
+        assert len(result) == 1  # [logits]
+        
+        logits = result[0]
+        assert isinstance(logits, np.ndarray)
+        
+        # Check shape
+        expected_shape = (1, 4, full_logits_server.vocab_size)  # [batch_size, seq_len-1, vocab_size]
+        assert logits.shape == expected_shape
+        
+        # Check that logits are finite
+        assert np.all(np.isfinite(logits))
     
     def test_process_logits_request_error_handling(self, server):
         """Test error handling in process_logits_request."""
@@ -366,26 +470,28 @@ if __name__ == "__main__":
     # Run some basic tests if executed directly
     print("Running basic tests...")
     
+    # Test sampling mode
     server = TeacherLogitsServer("google/gemma-3-1b-it", device="cpu")
     
     # Test basic functionality
-    text = "The quick brown fox"
-    print(f"Testing with text: '{text}'")
+    input_ids = torch.tensor([[1, 2, 3, 4, 5]])
+    print(f"Testing with input_ids: {input_ids}")
     
     # Test logits extraction
-    logits_list = server.get_prompt_logits(text)
-    print(f"Logits shape: {logits_list[0].shape}")
+    logits = server.get_logits_from_input_ids(input_ids)
+    print(f"Logits shape: {logits.shape}")
     
     # Test sampling
     sampled_tokens, sampled_logit_values = server.sample_from_logits(
-        logits_list[0], num_samples=3, temperature=0.8
+        logits[0], num_samples=3, temperature=0.8
     )
     print(f"Sampled tokens shape: {sampled_tokens.shape}")
     print(f"Sampled logit values shape: {sampled_logit_values.shape}")
     
     # Test process_input_ids
-    input_ids = server.tokenizer(text, return_tensors="pt").input_ids
-    indices, values = server.process_input_ids(input_ids)
+    result = server.process_input_ids(input_ids)
+    assert isinstance(result, tuple)
+    indices, values = result
     print(f"Input IDs shape: {input_ids.shape}")
     print(f"Indices shape: {indices.shape}")
     print(f"Values shape: {values.shape}")
@@ -398,33 +504,16 @@ if __name__ == "__main__":
     print(f"Function result - Indices shape: {indices_func.shape}")
     print(f"Function result - Values shape: {values_func.shape}")
     
-    # Verify consistency (structure only, not exact values due to sampling)
-    print("Verifying structural consistency between direct method and function...")
-    print(f"Direct method shapes: indices={indices.shape}, values={values.shape}")
-    print(f"Function shapes: indices={indices_func.shape}, values={values_func.shape}")
-    assert indices_func.shape == indices.shape
-    assert values_func.shape == values.shape
-    print("✓ Shapes match!")
+    # Test full logits mode
+    print("\nTesting full logits mode...")
+    full_logits_server = TeacherLogitsServer("google/gemma-3-1b-it", device="cpu", num_samples=None)
+    full_result = full_logits_server.process_input_ids(input_ids)
+    assert isinstance(full_result, torch.Tensor)
+    print(f"Full logits shape: {full_result.shape}")
     
-    # Verify both produce valid outputs
-    assert np.all(indices_func >= 0) and np.all(indices_func < server.vocab_size)
-    assert np.all(np.isfinite(values_func))
-    print("✓ Both produce valid outputs!")
-    
-    # Test logits consistency
-    print("\nTesting logits consistency...")
-    batch_size, seq_len, num_samples = indices.shape
-    
-    # Check a few samples
-    for batch_idx in range(batch_size):
-        for pos_idx in range(min(3, seq_len)):
-            for sample_idx in range(min(2, num_samples)):
-                token_idx = indices[batch_idx, pos_idx, sample_idx].item()
-                sampled_logit = values[batch_idx, pos_idx, sample_idx].item()
-                original_logit = logits_list[0][pos_idx, token_idx].item()
-                
-                print(f"Batch {batch_idx}, Position {pos_idx}, Sample {sample_idx}, Token {token_idx}: "
-                      f"sampled={sampled_logit:.4f}, original={original_logit:.4f}, "
-                      f"diff={abs(sampled_logit - original_logit):.6f}")
+    # Test full logits mode with process_logits_request
+    full_result_func = process_logits_request(full_logits_server, input_ids_np)
+    assert len(full_result_func) == 1
+    print(f"Full logits function result shape: {full_result_func[0].shape}")
     
     print("\nAll basic tests passed!")
