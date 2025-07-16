@@ -27,8 +27,8 @@ class TestSensAIServerIntegration:
     @pytest.fixture
     def teacher_server(self):
         """Create a TeacherLogitsServer instance for testing"""
-        # Use a small model for testing
-        return TeacherLogitsServer("gpt2", device="cpu")
+        # Use a small model for testing with sampling enabled
+        return TeacherLogitsServer("gpt2", device="cpu", num_samples=5)
     
     def test_server_initialization(self, transport_setup):
         """Test that SensAIServer can be initialized with transport"""
@@ -79,24 +79,26 @@ class TestSensAIServerIntegration:
                     input_ids = teacher_server.tokenizer(text, return_tensors="pt").input_ids
                     
                     # Process input_ids to get indices and values
-                    indices, values = teacher_server.process_input_ids(input_ids)
+                    result = teacher_server.process_input_ids(input_ids)
                     
-                    # Concatenate indices and values for transport
-                    indices_flat = indices.numpy().flatten()
-                    values_flat = values.numpy().flatten()
-                    
-                    # Return concatenated result with length indicator
-                    indices_length = np.array([len(indices_flat)], dtype=np.int32)
-                    result = np.concatenate([indices_length, indices_flat.astype(np.int32), values_flat.astype(np.float32)])
-                    return result
+                    # Handle both single tensor and tuple returns
+                    if isinstance(result, tuple):
+                        indices, values = result
+                        # Concatenate indices and values for transport
+                        indices_flat = indices.numpy().flatten()
+                        values_flat = values.numpy().flatten()
                         
-                elif request_type == 1:  # get_prompt_logits
-                    logits_list = teacher_server.get_prompt_logits(text)
-                    if logits_list:
-                        logits = logits_list[0]
-                        return logits.numpy().flatten()
+                        # Return concatenated result with length indicator
+                        indices_length = np.array([len(indices_flat)], dtype=np.int32)
+                        result = np.concatenate([indices_length, indices_flat.astype(np.int32), values_flat.astype(np.float32)])
+                        return result
                     else:
-                        return np.array([0])  # Empty result
+                        # Single tensor (full logits)
+                        return result.numpy().flatten()
+                        
+                elif request_type == 1:  # get_prompt_logits (deprecated)
+                    # This request type is no longer supported
+                    return np.array([0])  # Empty result
                 
                 else:
                     return np.array([-1])  # Invalid request type
@@ -109,7 +111,7 @@ class TestSensAIServerIntegration:
         text_bytes = text.encode('utf-8')
         
         # Create input tensor: [request_type, num_samples, temperature, top_p, top_k, ...text_bytes]
-        input_data = np.array([1, 5, 1.0, 1.0, 0] + list(text_bytes) + [0] * (100 - len(text_bytes)), dtype=np.float32)
+        input_data = np.array([0, 5, 1.0, 1.0, 0] + list(text_bytes) + [0] * (100 - len(text_bytes)), dtype=np.float32)
         
         result = process_logits_request(input_data)
         assert isinstance(result, np.ndarray)
