@@ -140,7 +140,7 @@ def main():
     # Set up SensAI client
     print("Setting up SensAI client...")
     shm_path = "/tmp/sensai_teacher_shm"
-    transport = SharedMemoryTransport(shm_path=shm_path, num_clients=1, max_elems=2_561_412_964, max_dtype=np.float32)
+    transport = SharedMemoryTransport(shm_path=shm_path, num_clients=1, max_elems=3_000_000_000, max_dtype=np.float32)
     client = SensAIClient(transport, slot_id=0)
     
     # Wrap the collate function

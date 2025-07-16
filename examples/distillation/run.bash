@@ -50,7 +50,8 @@ uv run python -m sensai.logits_server \
     --device cpu \
     --transport shared_memory \
     --num-clients 1 \
-    --max-elems 2_561_412_964 \
+    --shm-path /tmp/sensai_teacher_shm \
+    --max-elems 3000000000 \
     --interval 0.1 &
 
 SERVER_PID=$!
