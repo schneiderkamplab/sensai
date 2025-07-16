@@ -156,7 +156,8 @@ def main():
     student_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
-        device_map="auto" if device.type == "cuda" else None
+        device_map="auto" if device.type == "cuda" else None,
+        attn_implementation='eager'
     )
     if device.type == "cpu":
         student_model = student_model.to(device)
