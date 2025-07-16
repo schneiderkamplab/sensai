@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from typing import List, Union, Optional, Tuple
+from typing import List, Optional, Tuple
 import numpy as np
 
 
@@ -14,7 +14,7 @@ class TeacherLogitsServer:
     def __init__(self, 
                  model_name: str, 
                  device: str = "auto", 
-                 num_samples: int = 256,
+                 num_samples: Optional[int] = 256,
                  temperature: float = 1.0,
                  top_p: float = 1.0,
                  top_k: int = 0,
@@ -25,7 +25,7 @@ class TeacherLogitsServer:
         Args:
             model_name: Name or path of the model to load
             device: Device to load model on ("auto", "cuda", "cpu")
-            num_samples: Number of samples to draw per position
+            num_samples: Number of samples to draw per position (None/0/-1 = return full logits)
             temperature: Temperature for sampling (higher = more random)
             top_p: Nucleus sampling threshold
             top_k: Top-k sampling (0 = disabled)
@@ -58,73 +58,15 @@ class TeacherLogitsServer:
         self.vocab_size = self.model.config.vocab_size
         
         # Store sampling parameters
-        self.num_samples = num_samples
+        # Convert num_samples=None/0/-1 to None for full logits mode
+        if num_samples is None or num_samples == 0 or num_samples == -1:
+            self.num_samples = None
+        else:
+            self.num_samples = num_samples
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
         
-    def get_prompt_logits(self, texts: Union[str, List[str]]) -> List[torch.Tensor]:
-        """
-        Extract logits for prompt tokens without generation using efficient batching.
-        
-        Args:
-            texts: Single text string or list of text strings
-            
-        Returns:
-            List of tensors, each with shape [seq_len, vocab_size] containing logits
-        """
-        if isinstance(texts, str):
-            texts = [texts]
-        
-        # Handle empty texts
-        if not texts:
-            return []
-        
-        logits_list = []
-        
-        with torch.no_grad():
-            # Tokenize all texts in batch with padding
-            inputs = self.tokenizer(
-                texts,
-                return_tensors="pt",
-                padding=True,
-                truncation=False,
-                return_attention_mask=True
-            ).to(self.device)
-            
-            # Get model outputs for the entire batch
-            outputs = self.model(**inputs)
-            batch_logits = outputs.logits  # Shape: [batch_size, seq_len, vocab_size]
-            
-            # Process each text in the batch
-            for i in range(len(texts)):
-                # Get attention mask for this sequence to find actual length
-                attention_mask = inputs.attention_mask[i]
-                actual_length = attention_mask.sum().item()
-                
-                if actual_length == 0:
-                    # Empty sequence
-                    logits_list.append(torch.empty(0, self.vocab_size))
-                    continue
-                
-                # Extract logits for this sequence
-                sequence_logits = batch_logits[i]  # Shape: [seq_len, vocab_size]
-                
-                # Only keep logits for non-padded positions
-                sequence_logits = sequence_logits[:actual_length]
-                
-                # For causal LM, we want logits for positions 0 to seq_len-1
-                # where logits[i] predicts token at position i+1
-                if sequence_logits.shape[0] > 1:
-                    # Use logits for positions 0 to seq_len-1 (predicting next tokens)
-                    prompt_logits = sequence_logits[:-1]  # Remove last position
-                else:
-                    # Single token case
-                    prompt_logits = sequence_logits
-                
-                logits_list.append(prompt_logits.cpu())
-        
-        return logits_list
     
     def get_logits_from_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         """
@@ -164,21 +106,27 @@ class TeacherLogitsServer:
             
             return prompt_logits.cpu()
     
-    def process_input_ids(self, input_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def process_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         """
-        Process input_ids and return separate indices and values tensors.
+        Process input_ids and return logits tensor.
         
         Args:
             input_ids: Tensor of shape [batch_size, seq_len] containing token IDs
             
         Returns:
-            Tuple of (indices, values) where:
+            If num_samples is None: Tensor of shape [batch_size, seq_len-1, vocab_size] containing full logits
+            If num_samples is set: Tuple of (indices, values) where:
             - indices: Tensor of shape [batch_size, seq_len-1, num_samples] containing token indices
             - values: Tensor of shape [batch_size, seq_len-1, num_samples] containing logit values
         """
         # Get logits from input_ids
         logits = self.get_logits_from_input_ids(input_ids)  # [batch_size, seq_len-1, vocab_size]
         
+        # If num_samples is None, return full logits
+        if self.num_samples is None:
+            return logits
+        
+        # Otherwise, proceed with sampling
         batch_size, seq_len, vocab_size = logits.shape
         
         # Initialize output tensors
@@ -295,7 +243,8 @@ def process_logits_request(teacher_server: TeacherLogitsServer, input_tensor: np
         input_tensor: NumPy array containing input_ids (token IDs)
         
     Returns:
-        List containing [indices, values] as NumPy arrays
+        If num_samples is None: List containing [logits] as NumPy array
+        If num_samples is set: List containing [indices, values] as NumPy arrays
     """
     try:
         # Convert input to torch tensor and reshape to [batch_size, seq_len]
@@ -312,14 +261,19 @@ def process_logits_request(teacher_server: TeacherLogitsServer, input_tensor: np
         batch_size, seq_len = input_ids.shape
         print(f"Processing input_ids: batch_size={batch_size}, seq_len={seq_len}")
         
-        # Process input_ids to get indices and values tensors
-        indices, values = teacher_server.process_input_ids(input_ids)
+        # Process input_ids
+        result = teacher_server.process_input_ids(input_ids)
         
-        # Convert to numpy arrays and return as list
-        indices_np = indices.numpy()
-        values_np = values.numpy()
-        
-        return [indices_np, values_np]
+        if teacher_server.num_samples is None:
+            # Return full logits
+            logits_np = result.numpy()
+            return [logits_np]
+        else:
+            # Return indices and values
+            indices, values = result
+            indices_np = indices.numpy()
+            values_np = values.numpy()
+            return [indices_np, values_np]
             
     except Exception as e:
         print(f"Error processing request: {e}")
@@ -332,7 +286,6 @@ def process_logits_request(teacher_server: TeacherLogitsServer, input_tensor: np
 if __name__ == "__main__":
     import argparse
     import os
-    import tempfile
     from .server import SensAIServer
     from .utils import create_transport
     
