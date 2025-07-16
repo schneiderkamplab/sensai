@@ -1,20 +1,20 @@
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from typing import List, Union, Optional, Tuple
+from typing import List, Optional, Tuple
 import numpy as np
 
 
 class TeacherLogitsServer:
     """
     A wrapper around HuggingFace Transformers that extracts logits from prompt tokens and samples according to probabilities.
-    Returns sparse COO tensors for efficient storage of sampled logits.
+    Returns separate indices and values tensors for efficient storage of sampled logits.
     """
     
     def __init__(self, 
                  model_name: str, 
                  device: str = "auto", 
-                 num_samples: int = 256,
+                 num_samples: Optional[int] = 256,
                  temperature: float = 1.0,
                  top_p: float = 1.0,
                  top_k: int = 0,
@@ -25,7 +25,7 @@ class TeacherLogitsServer:
         Args:
             model_name: Name or path of the model to load
             device: Device to load model on ("auto", "cuda", "cpu")
-            num_samples: Number of samples to draw per position
+            num_samples: Number of samples to draw per position (None/0/-1 = return full logits)
             temperature: Temperature for sampling (higher = more random)
             top_p: Nucleus sampling threshold
             top_k: Top-k sampling (0 = disabled)
@@ -58,80 +58,24 @@ class TeacherLogitsServer:
         self.vocab_size = self.model.config.vocab_size
         
         # Store sampling parameters
-        self.num_samples = num_samples
+        # Convert num_samples=None/0/-1 to None for full logits mode
+        if num_samples is None or num_samples == 0 or num_samples == -1:
+            self.num_samples = None
+        else:
+            self.num_samples = num_samples
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
         
-    def get_prompt_logits(self, texts: Union[str, List[str]]) -> List[torch.Tensor]:
-        """
-        Extract logits for prompt tokens without generation using efficient batching.
-        
-        Args:
-            texts: Single text string or list of text strings
-            
-        Returns:
-            List of tensors, each with shape [seq_len, vocab_size] containing logits
-        """
-        if isinstance(texts, str):
-            texts = [texts]
-        
-        # Handle empty texts
-        if not texts:
-            return []
-        
-        logits_list = []
-        
-        with torch.no_grad():
-            # Tokenize all texts in batch with padding
-            inputs = self.tokenizer(
-                texts,
-                return_tensors="pt",
-                padding=True,
-                truncation=False,
-                return_attention_mask=True
-            ).to(self.device)
-            
-            # Get model outputs for the entire batch
-            outputs = self.model(**inputs)
-            batch_logits = outputs.logits  # Shape: [batch_size, seq_len, vocab_size]
-            
-            # Process each text in the batch
-            for i in range(len(texts)):
-                # Get attention mask for this sequence to find actual length
-                attention_mask = inputs.attention_mask[i]
-                actual_length = attention_mask.sum().item()
-                
-                if actual_length == 0:
-                    # Empty sequence
-                    logits_list.append(torch.empty(0, self.vocab_size))
-                    continue
-                
-                # Extract logits for this sequence
-                sequence_logits = batch_logits[i]  # Shape: [seq_len, vocab_size]
-                
-                # Only keep logits for non-padded positions
-                sequence_logits = sequence_logits[:actual_length]
-                
-                # For causal LM, we want logits for positions 0 to seq_len-1
-                # where logits[i] predicts token at position i+1
-                if sequence_logits.shape[0] > 1:
-                    # Use logits for positions 0 to seq_len-1 (predicting next tokens)
-                    prompt_logits = sequence_logits[:-1]  # Remove last position
-                else:
-                    # Single token case
-                    prompt_logits = sequence_logits
-                
-                logits_list.append(prompt_logits.cpu())
-        
-        return logits_list
     
-    def get_logits_from_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def get_logits_from_input_ids(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Extract logits from input_ids tensor directly.
         
         Args:
             input_ids: Tensor of shape [batch_size, seq_len] containing token IDs
+            attention_mask: Optional tensor of shape [batch_size, seq_len] containing attention mask.
+                          If None, assumes all tokens are valid (no padding)
             
         Returns:
             Tensor of shape [batch_size, seq_len-1, vocab_size] containing logits for prompt tokens
@@ -141,8 +85,11 @@ class TeacherLogitsServer:
         
         batch_size, seq_len = input_ids.shape
         
-        # Create attention mask (assume all tokens are valid, no padding)
-        attention_mask = torch.ones_like(input_ids)
+        # Create attention mask if not provided (assume all tokens are valid, no padding)
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids)
+        elif attention_mask.dim() == 1:
+            attention_mask = attention_mask.unsqueeze(0)  # Add batch dimension
         
         with torch.no_grad():
             # Move to device
@@ -164,71 +111,62 @@ class TeacherLogitsServer:
             
             return prompt_logits.cpu()
     
-    def process_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def process_input_ids(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Process input_ids and return sparse COO tensor with sampled logits.
+        Process input_ids and return logits tensor.
         
         Args:
             input_ids: Tensor of shape [batch_size, seq_len] containing token IDs
+            attention_mask: Optional tensor of shape [batch_size, seq_len] containing attention mask.
+                          If None, assumes all tokens are valid (no padding)
             
         Returns:
-            Sparse COO tensor of shape [batch_size, num_samples, seq_len-1, vocab_size]
+            If num_samples is None: Tensor of shape [batch_size, seq_len-1, vocab_size] containing full logits
+            If num_samples is set: Tuple of (indices, values) where:
+            - indices: Tensor of shape [batch_size, seq_len-1, num_samples] containing token indices
+            - values: Tensor of shape [batch_size, seq_len-1, num_samples] containing logit values
         """
         # Get logits from input_ids
-        logits = self.get_logits_from_input_ids(input_ids)  # [batch_size, seq_len-1, vocab_size]
+        logits = self.get_logits_from_input_ids(input_ids, attention_mask)  # [batch_size, seq_len-1, vocab_size]
         
+        # If num_samples is None, return full logits
+        if self.num_samples is None:
+            return logits
+        
+        # Otherwise, proceed with sampling
         batch_size, seq_len, vocab_size = logits.shape
         
-        all_sparse_results = []
+        # Initialize output tensors
+        all_indices = torch.zeros(batch_size, seq_len, self.num_samples, dtype=torch.long)
+        all_values = torch.zeros(batch_size, seq_len, self.num_samples, dtype=torch.float32)
         
         for batch_idx in range(batch_size):
             sequence_logits = logits[batch_idx]  # [seq_len, vocab_size]
             
             if sequence_logits.numel() == 0:
-                # Empty sequence - return empty sparse tensor
-                sparse_tensor = torch.sparse_coo_tensor(
-                    torch.empty((3, 0), dtype=torch.long),
-                    torch.empty(0),
-                    (self.num_samples, 0, vocab_size)
-                )
+                # Empty sequence - indices and values already initialized to zeros
+                continue
             else:
                 # Sample tokens and get their logit values
                 sampled_tokens, sampled_logit_values = self.sample_from_logits(
                     sequence_logits, self.num_samples, self.temperature, self.top_p, self.top_k
                 )
                 
+                # Reshape to [seq_len, num_samples] if needed
                 if sampled_tokens.dim() == 1:
+                    # Single position case: [num_samples] -> [1, num_samples]
                     sampled_tokens = sampled_tokens.unsqueeze(0)
                     sampled_logit_values = sampled_logit_values.unsqueeze(0)
+                else:
+                    # Multiple positions case: [num_samples, seq_len] -> [seq_len, num_samples]
+                    sampled_tokens = sampled_tokens.transpose(0, 1)
+                    sampled_logit_values = sampled_logit_values.transpose(0, 1)
                 
-                # Convert to sparse COO tensor
-                # Create indices for sparse tensor
-                sample_indices = torch.arange(self.num_samples).unsqueeze(1).expand(-1, seq_len)
-                position_indices = torch.arange(seq_len).unsqueeze(0).expand(self.num_samples, -1)
-                
-                # Flatten indices
-                sample_flat = sample_indices.flatten()
-                position_flat = position_indices.flatten()
-                token_flat = sampled_tokens.flatten()
-                logit_values_flat = sampled_logit_values.flatten()
-                
-                # Stack indices: [sample_dim, position_dim, vocab_dim]
-                indices = torch.stack([sample_flat, position_flat, token_flat])
-                values = logit_values_flat.float()
-                
-                # Create sparse COO tensor
-                sparse_tensor = torch.sparse_coo_tensor(
-                    indices, values, (self.num_samples, seq_len, vocab_size)
-                )
-            
-            all_sparse_results.append(sparse_tensor)
+                # Store in output tensors
+                all_indices[batch_idx, :seq_len, :] = sampled_tokens
+                all_values[batch_idx, :seq_len, :] = sampled_logit_values
         
-        # Stack all batch results
-        if len(all_sparse_results) == 1:
-            return all_sparse_results[0]
-        else:
-            # For multiple batch items, return list or stack appropriately
-            return all_sparse_results
+        return all_indices, all_values
     
     def sample_from_logits(self, 
                           logits: torch.Tensor, 
@@ -301,116 +239,82 @@ class TeacherLogitsServer:
             sampled_logit_values = sampled_logit_values.squeeze(-1)  # Remove seq_len dimension
         
         return sampled_token_ids, sampled_logit_values
+
+
+def process_logits_request(teacher_server: TeacherLogitsServer, input_data) -> List[np.ndarray]:
+    """
+    Process a logits request. Input can be either a single tensor (input_ids) or list of tensors (input_ids, attention_mask).
     
-    def sample_to_sparse_coo(self, 
-                            texts: Union[str, List[str]],
-                            num_samples: int = 1,
-                            temperature: float = 1.0,
-                            top_p: float = 1.0,
-                            top_k: int = 0) -> List[torch.Tensor]:
-        """
-        Main function: Extract logits and return sampled results as sparse COO tensors.
+    Args:
+        teacher_server: TeacherLogitsServer instance to process the request
+        input_data: Either:
+                   - Single NumPy array containing input_ids (token IDs) for backward compatibility
+                   - List of NumPy arrays [input_ids, attention_mask] for dual tensor input
         
-        Args:
-            texts: Input text(s) to process
-            num_samples: Number of samples per position
-            temperature: Sampling temperature
-            top_p: Nucleus sampling threshold
-            top_k: Top-k sampling
-            
-        Returns:
-            List of sparse COO tensors, one per input text.
-            Each tensor has shape [num_samples, seq_len, vocab_size] with logit values at sampled positions.
-        """
-        if isinstance(texts, str):
-            texts = [texts]
+    Returns:
+        If num_samples is None: List containing [logits] as NumPy array
+        If num_samples is set: List containing [indices, values] as NumPy arrays
+    """
+    try:
+        # Handle both single tensor and list of tensors
+        if isinstance(input_data, np.ndarray):
+            # Single tensor case - assume it's input_ids
+            input_ids = torch.from_numpy(input_data).long()
+            attention_mask = None
+        elif isinstance(input_data, list) and len(input_data) >= 1:
+            # List of tensors case
+            input_ids = torch.from_numpy(input_data[0]).long()
+            attention_mask = torch.from_numpy(input_data[1]).long() if len(input_data) > 1 else None
+        else:
+            raise ValueError("Input must be either a numpy array or list of numpy arrays")
         
-        # Get logits for all texts
-        logits_list = self.get_prompt_logits(texts)
+        # Handle different input shapes for input_ids
+        if input_ids.dim() == 1:
+            # Single sequence: [seq_len] -> [1, seq_len]
+            input_ids = input_ids.unsqueeze(0)
+        elif input_ids.dim() > 2:
+            # Flatten to 2D: [batch_size, seq_len]
+            input_ids = input_ids.view(-1, input_ids.shape[-1])
         
-        sparse_results = []
-        for logits in logits_list:
-            if logits.numel() == 0:
-                # Empty sequence - return empty sparse tensor
-                sparse_results.append(torch.sparse_coo_tensor(
-                    torch.empty((3, 0), dtype=torch.long),
-                    torch.empty(0),
-                    (num_samples, 0, self.vocab_size)
-                ))
-                continue
-            
-            seq_len = logits.shape[0]
-            
-            # Sample tokens and get their logit values
-            sampled_tokens, sampled_logit_values = self.sample_from_logits(
-                logits, num_samples, temperature, top_p, top_k
-            )
-            
-            if sampled_tokens.dim() == 1:
-                sampled_tokens = sampled_tokens.unsqueeze(0)
-                sampled_logit_values = sampled_logit_values.unsqueeze(0)
-            
-            # Convert to sparse COO tensor
-            # Create indices for sparse tensor
-            sample_indices = torch.arange(num_samples).unsqueeze(1).expand(-1, seq_len)
-            position_indices = torch.arange(seq_len).unsqueeze(0).expand(num_samples, -1)
-            
-            # Flatten indices
-            sample_flat = sample_indices.flatten()
-            position_flat = position_indices.flatten()
-            token_flat = sampled_tokens.flatten()
-            logit_values_flat = sampled_logit_values.flatten()
-            
-            # Stack indices: [sample_dim, position_dim, vocab_dim]
-            indices = torch.stack([sample_flat, position_flat, token_flat])
-            values = logit_values_flat.float()
-            
-            # Create sparse COO tensor
-            sparse_tensor = torch.sparse_coo_tensor(
-                indices, values, (num_samples, seq_len, self.vocab_size)
-            )
-            
-            sparse_results.append(sparse_tensor)
+        # Handle different input shapes for attention_mask if provided
+        if attention_mask is not None:
+            if attention_mask.dim() == 1:
+                # Single sequence: [seq_len] -> [1, seq_len]
+                attention_mask = attention_mask.unsqueeze(0)
+            elif attention_mask.dim() > 2:
+                # Flatten to 2D: [batch_size, seq_len]
+                attention_mask = attention_mask.view(-1, attention_mask.shape[-1])
         
-        return sparse_results
-    
-    def decode_samples(self, sparse_tensor: torch.Tensor) -> List[str]:
-        """
-        Decode sampled tokens back to text.
+        batch_size, seq_len = input_ids.shape
+        print(f"Processing input_ids: batch_size={batch_size}, seq_len={seq_len}")
+        if attention_mask is not None:
+            print(f"Processing attention_mask: shape={attention_mask.shape}")
         
-        Args:
-            sparse_tensor: Sparse COO tensor from sample_to_sparse_coo
-            
-        Returns:
-            List of decoded text samples
-        """
-        sparse_tensor = sparse_tensor.coalesce()
-        indices = sparse_tensor.indices()
-        num_samples = sparse_tensor.shape[0]
+        # Process input_ids with optional attention_mask
+        result = teacher_server.process_input_ids(input_ids, attention_mask)
         
-        # Group indices by sample
-        decoded_samples = []
-        for sample_idx in range(num_samples):
-            sample_mask = indices[0] == sample_idx
-            sample_positions = indices[1][sample_mask]
-            sample_tokens = indices[2][sample_mask]
+        if teacher_server.num_samples is None:
+            # Return full logits
+            logits_np = result.numpy()
+            return [logits_np]
+        else:
+            # Return indices and values
+            indices, values = result
+            indices_np = indices.numpy()
+            values_np = values.numpy()
+            return [indices_np, values_np]
             
-            # Sort by position
-            _, sort_indices = torch.sort(sample_positions)
-            sorted_tokens = sample_tokens[sort_indices]
-            
-            # Decode tokens
-            decoded_text = self.tokenizer.decode(sorted_tokens.tolist(), skip_special_tokens=True)
-            decoded_samples.append(decoded_text)
-        
-        return decoded_samples
+    except Exception as e:
+        print(f"Error processing request: {e}")
+        import traceback
+        traceback.print_exc()
+        return [np.array([-1]), np.array([-1])]  # Error indicators
 
 
 # Example usage
 if __name__ == "__main__":
     import argparse
     import os
-    import tempfile
     from .server import SensAIServer
     from .utils import create_transport
     
@@ -429,8 +333,12 @@ if __name__ == "__main__":
                         help="Directory for named pipes (auto-generated if not specified)")
     parser.add_argument("--shm-path", type=str, default="/tmp/sensai_teacher_shm",
                         help="Path for shared memory file")
-    parser.add_argument("--max-elems", type=int, default=1000000,
-                        help="Maximum elements per tensor for shared memory")
+    parser.add_argument("--max-nbytes", type=int, default=1000000000,
+                        help="Maximum bytes for shared memory buffer")
+    parser.add_argument("--max-tensors", type=int, default=4,
+                        help="Maximum number of tensors per message")
+    parser.add_argument("--max-dims", type=int, default=8,
+                        help="Maximum number of dimensions per tensor")
     parser.add_argument("--interval", type=float, default=0.001,
                         help="Server polling interval in seconds")
     
@@ -463,59 +371,17 @@ if __name__ == "__main__":
         "num_clients": args.num_clients,
         "pipe_dir": args.pipe_dir,
         "shm_path": args.shm_path,
-        "max_elems": args.max_elems,
-        "max_dtype": np.float32
+        "max_nbytes": args.max_nbytes,
+        "max_tensors": args.max_tensors,
+        "max_dims": args.max_dims
     }
     
     transport, cleanup_path = create_transport(args.transport, **transport_kwargs)
     print(f"Transport created: {args.transport} with {args.num_clients} client slots")
     
-    def process_logits_request(input_tensor: np.ndarray) -> np.ndarray:
-        """
-        Process a logits request. Input tensor should be input_ids of shape [batch_size, seq_len].
-        
-        Args:
-            input_tensor: NumPy array containing input_ids (token IDs)
-            
-        Returns:
-            NumPy array containing flattened sparse tensor results
-        """
-        try:
-            # Convert input to torch tensor and reshape to [batch_size, seq_len]
-            input_ids = torch.from_numpy(input_tensor).long()
-            
-            # Handle different input shapes
-            if input_ids.dim() == 1:
-                # Single sequence: [seq_len] -> [1, seq_len]
-                input_ids = input_ids.unsqueeze(0)
-            elif input_ids.dim() > 2:
-                # Flatten to 2D: [batch_size, seq_len]
-                input_ids = input_ids.view(-1, input_ids.shape[-1])
-            
-            batch_size, seq_len = input_ids.shape
-            print(f"Processing input_ids: batch_size={batch_size}, seq_len={seq_len}")
-            
-            # Process input_ids to get sparse tensor
-            sparse_result = teacher_server.process_input_ids(input_ids)
-            
-            if isinstance(sparse_result, list):
-                # Multiple batch items - handle first one for now
-                sparse_tensor = sparse_result[0]
-            else:
-                sparse_tensor = sparse_result
-            
-            # Convert sparse tensor to dense for transport
-            if sparse_tensor._nnz() > 0:
-                dense_tensor = sparse_tensor.to_dense()
-                return dense_tensor.numpy().flatten()
-            else:
-                return np.array([0])  # Empty result
-                
-        except Exception as e:
-            print(f"Error processing request: {e}")
-            import traceback
-            traceback.print_exc()
-            return np.array([-1])  # Error indicator
+    # Create request processor function that uses the teacher_server
+    def request_processor(input_tensor: np.ndarray) -> List[np.ndarray]:
+        return process_logits_request(teacher_server, input_tensor)
     
     # Create and run server
     sensai_server = SensAIServer(transport)
@@ -523,7 +389,7 @@ if __name__ == "__main__":
     print("Server is running... Press Ctrl+C to stop")
     
     try:
-        sensai_server.run_loop(process_logits_request, interval=args.interval)
+        sensai_server.run_loop(request_processor, interval=args.interval)
     except KeyboardInterrupt:
         print("\nServer stopped")
     finally:

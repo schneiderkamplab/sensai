@@ -5,10 +5,11 @@ import pytest
 import numpy as np
 import tempfile
 import shutil
+import torch
 from sensai.server import SensAIServer
 from sensai.client import SensAIClient
 from sensai.transports import NamedPipeTransport
-from sensai.logits_server import TeacherLogitsServer
+from sensai.logits_server import TeacherLogitsServer, process_logits_request
 
 
 class TestSensAIServerIntegration:
@@ -26,8 +27,8 @@ class TestSensAIServerIntegration:
     @pytest.fixture
     def teacher_server(self):
         """Create a TeacherLogitsServer instance for testing"""
-        # Use a small model for testing
-        return TeacherLogitsServer("gpt2", device="cpu")
+        # Use a small model for testing with sampling enabled
+        return TeacherLogitsServer("gpt2", device="cpu", num_samples=5)
     
     def test_server_initialization(self, transport_setup):
         """Test that SensAIServer can be initialized with transport"""
@@ -54,7 +55,7 @@ class TestSensAIServerIntegration:
         def process_logits_request(input_tensor: np.ndarray) -> np.ndarray:
             """
             Process a logits request. Input tensor should contain:
-            - First element: request type (0=sample_to_sparse_coo, 1=get_prompt_logits)
+            - First element: request type (0=process_input_ids, 1=get_prompt_logits)
             - Second element: num_samples (for sampling requests)
             - Third element: temperature
             - Fourth element: top_p
@@ -73,30 +74,31 @@ class TestSensAIServerIntegration:
                 text_bytes = input_tensor[5:].astype(np.uint8).tobytes()
                 text = text_bytes.decode('utf-8').rstrip('\x00')  # Remove null padding
                 
-                if request_type == 0:  # sample_to_sparse_coo
-                    sparse_results = teacher_server.sample_to_sparse_coo(
-                        text, 
-                        num_samples=num_samples,
-                        temperature=temperature,
-                        top_p=top_p,
-                        top_k=top_k
-                    )
+                if request_type == 0:  # process_input_ids
+                    # Convert text to input_ids
+                    input_ids = teacher_server.tokenizer(text, return_tensors="pt").input_ids
                     
-                    # Convert sparse tensor to dense for transport
-                    if sparse_results:
-                        sparse_tensor = sparse_results[0]
-                        dense_tensor = sparse_tensor.to_dense()
-                        return dense_tensor.numpy().flatten()
-                    else:
-                        return np.array([0])  # Empty result
+                    # Process input_ids to get indices and values
+                    result = teacher_server.process_input_ids(input_ids)
+                    
+                    # Handle both single tensor and tuple returns
+                    if isinstance(result, tuple):
+                        indices, values = result
+                        # Concatenate indices and values for transport
+                        indices_flat = indices.numpy().flatten()
+                        values_flat = values.numpy().flatten()
                         
-                elif request_type == 1:  # get_prompt_logits
-                    logits_list = teacher_server.get_prompt_logits(text)
-                    if logits_list:
-                        logits = logits_list[0]
-                        return logits.numpy().flatten()
+                        # Return concatenated result with length indicator
+                        indices_length = np.array([len(indices_flat)], dtype=np.int32)
+                        result = np.concatenate([indices_length, indices_flat.astype(np.int32), values_flat.astype(np.float32)])
+                        return result
                     else:
-                        return np.array([0])  # Empty result
+                        # Single tensor (full logits)
+                        return result.numpy().flatten()
+                        
+                elif request_type == 1:  # get_prompt_logits (deprecated)
+                    # This request type is no longer supported
+                    return np.array([0])  # Empty result
                 
                 else:
                     return np.array([-1])  # Invalid request type
@@ -109,7 +111,7 @@ class TestSensAIServerIntegration:
         text_bytes = text.encode('utf-8')
         
         # Create input tensor: [request_type, num_samples, temperature, top_p, top_k, ...text_bytes]
-        input_data = np.array([1, 5, 1.0, 1.0, 0] + list(text_bytes) + [0] * (100 - len(text_bytes)), dtype=np.float32)
+        input_data = np.array([0, 5, 1.0, 1.0, 0] + list(text_bytes) + [0] * (100 - len(text_bytes)), dtype=np.float32)
         
         result = process_logits_request(input_data)
         assert isinstance(result, np.ndarray)
@@ -119,7 +121,7 @@ class TestSensAIServerIntegration:
     def test_create_request_tensor(self):
         """Test creating a request tensor in the expected format"""
         text = "The quick brown fox"
-        request_type = 0  # sample_to_sparse_coo
+        request_type = 0  # process_input_ids
         num_samples = 10
         temperature = 0.8
         top_p = 0.9
@@ -185,6 +187,81 @@ class TestSensAIServerIntegration:
         decoded_text = decoded_bytes.decode('utf-8')
         
         assert decoded_text == original_text
+
+    def test_process_logits_request_function(self, teacher_server):
+        """Test the top-level process_logits_request function"""
+        # Create sample input_ids
+        input_ids = np.array([[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]], dtype=np.int32)
+        
+        # Call the function
+        result = process_logits_request(teacher_server, input_ids)
+        
+        # Verify result structure
+        assert isinstance(result, list)
+        assert len(result) == 2  # [indices, values]
+        
+        indices, values = result
+        assert isinstance(indices, np.ndarray)
+        assert isinstance(values, np.ndarray)
+        
+        # Check shapes
+        expected_shape = (2, 4, teacher_server.num_samples)  # [batch_size, seq_len-1, num_samples]
+        assert indices.shape == expected_shape
+        assert values.shape == expected_shape
+        
+        # Check that indices are valid vocabulary indices
+        assert np.all(indices >= 0)
+        assert np.all(indices < teacher_server.vocab_size)
+        
+        # Check that values are finite
+        assert np.all(np.isfinite(values))
+    
+    def test_process_logits_request_single_sequence(self, teacher_server):
+        """Test the top-level process_logits_request function with single sequence"""
+        # Create single sequence input_ids
+        input_ids = np.array([1, 2, 3, 4], dtype=np.int32)
+        
+        # Call the function
+        result = process_logits_request(teacher_server, input_ids)
+        
+        # Verify result structure
+        assert isinstance(result, list)
+        assert len(result) == 2  # [indices, values]
+        
+        indices, values = result
+        assert isinstance(indices, np.ndarray)
+        assert isinstance(values, np.ndarray)
+        
+        # Check shapes (should add batch dimension)
+        expected_shape = (1, 3, teacher_server.num_samples)  # [batch_size=1, seq_len-1, num_samples]
+        assert indices.shape == expected_shape
+        assert values.shape == expected_shape
+        
+        # Check that indices are valid vocabulary indices
+        assert np.all(indices >= 0)
+        assert np.all(indices < teacher_server.vocab_size)
+        
+        # Check that values are finite
+        assert np.all(np.isfinite(values))
+    
+    def test_process_logits_request_error_handling(self, teacher_server):
+        """Test error handling in process_logits_request function"""
+        # Test with invalid input (empty array)
+        empty_input = np.array([])
+        
+        result = process_logits_request(teacher_server, empty_input)
+        
+        # Should return error indicators
+        assert isinstance(result, list)
+        assert len(result) == 2
+        
+        indices, values = result
+        assert isinstance(indices, np.ndarray)
+        assert isinstance(values, np.ndarray)
+        
+        # Check for error indicators
+        assert indices.size == 1 and indices[0] == -1
+        assert values.size == 1 and values[0] == -1
 
 
 if __name__ == "__main__":

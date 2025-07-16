@@ -62,7 +62,13 @@ def wrap_collate_function(
         )
         
         if teacher_logits is not None:
-            batch[teacher_logits_attribute] = teacher_logits
+            # teacher_logits is now a list [indices, values]
+            if isinstance(teacher_logits, list) and len(teacher_logits) == 2:
+                batch[f"{teacher_logits_attribute}_indices"] = teacher_logits[0]
+                batch[f"{teacher_logits_attribute}_values"] = teacher_logits[1]
+            else:
+                # Backward compatibility - store as single tensor
+                batch[teacher_logits_attribute] = teacher_logits
         else:
             warnings.warn(
                 f"Failed to obtain teacher logits after {num_retries} retries. "
@@ -80,7 +86,7 @@ def _request_teacher_logits_with_retry(
     input_tensor: np.ndarray,
     num_retries: int,
     retry_delay: float
-) -> Optional[np.ndarray]:
+) -> Optional[list]:
     """
     Request teacher logits with retry logic.
     
@@ -91,7 +97,7 @@ def _request_teacher_logits_with_retry(
         retry_delay (float): Delay between retries in seconds.
         
     Returns:
-        Optional[np.ndarray]: Teacher logits if successful, None if all retries failed.
+        Optional[list]: List of [indices, values] tensors if successful, None if all retries failed.
     """
     for attempt in range(num_retries + 1):  # +1 for initial attempt
         try:
@@ -101,15 +107,31 @@ def _request_teacher_logits_with_retry(
             if result is None:
                 raise ValueError("Server returned None")
             
-            if not isinstance(result, np.ndarray):
+            # Handle new list format [indices, values]
+            if isinstance(result, list):
+                if len(result) != 2:
+                    raise ValueError(f"Server returned list with {len(result)} elements, expected 2")
+                
+                indices, values = result
+                
+                if not isinstance(indices, np.ndarray) or not isinstance(values, np.ndarray):
+                    raise ValueError(f"Server returned invalid tensor types: {type(indices)}, {type(values)}")
+                
+                # Check for error indicators
+                if (indices.size == 1 and indices[0] == -1) or (values.size == 1 and values[0] == -1):
+                    raise ValueError("Server returned error indicator")
+                
+            # Backward compatibility - handle single tensor
+            elif isinstance(result, np.ndarray):
+                if result.size == 0:
+                    raise ValueError("Server returned empty tensor")
+                
+                # Check for error indicator
+                if result.size == 1 and result[0] == -1:
+                    raise ValueError("Server returned error indicator")
+            
+            else:
                 raise ValueError(f"Server returned invalid type: {type(result)}")
-            
-            if result.size == 0:
-                raise ValueError("Server returned empty tensor")
-            
-            # Check for error indicator
-            if result.size == 1 and result[0] == -1:
-                raise ValueError("Server returned error indicator")
             
             # Success
             return result
@@ -143,13 +165,15 @@ def create_transport(transport_type: str, **kwargs):
     elif transport_type == "shared_memory":
         shm_path = kwargs.get("shm_path", "/tmp/sensai_teacher_shm")
         num_clients = kwargs.get("num_clients", 4)
-        max_elems = kwargs.get("max_elems", 1000000)
-        max_dtype = kwargs.get("max_dtype", np.float32)
+        max_nbytes = kwargs.get("max_nbytes", 1000000000)
+        max_tensors = kwargs.get("max_tensors", 4)
+        max_dims = kwargs.get("max_dims", 8)
         return SharedMemoryTransport(
             path=shm_path, 
             num_clients=num_clients, 
-            max_elems=max_elems, 
-            max_dtype=max_dtype
+            max_nbytes=max_nbytes, 
+            max_tensors=max_tensors,
+            max_dims=max_dims
         ), shm_path
     
     else:
