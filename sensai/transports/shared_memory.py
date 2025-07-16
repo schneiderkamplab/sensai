@@ -13,13 +13,15 @@ class SharedMemoryTransport(Transport):
         "server": 1
     }
 
+    _MAX_TENSORS = 4
     _MAX_DIMS = 8
     _HEADER_DTYPE = np.dtype([
-        ('status', 'i8'),
-        ('dtype_code', 'i8'),
-        ('ndim', 'i8'),
-        ('nbytes', 'i64'),
-        ('shape', f'({_MAX_DIMS},)i8')
+        ('status', np.int8),
+        ('num_tensors', np.int8),
+        ('dtype_codes', (np.int8, _MAX_TENSORS)),
+        ('ndims', (np.int8, _MAX_TENSORS)),
+        ('nbytess', (np.int64, _MAX_TENSORS)),  # yes, plural ugly name, for consistency
+        ('shapes', (np.int8, (_MAX_TENSORS, _MAX_DIMS)))
     ])
 
     def __init__(self, shm_path: str, num_clients: int, max_elems: int, max_dtype: np.dtype, debug: bool = True):
@@ -56,28 +58,42 @@ class SharedMemoryTransport(Transport):
         if self.debug:
             print(f"[SharedMemoryTransport] {msg}")
 
-    def write_tensor(self, slot_id: int, tensor: np.ndarray, role: str) -> None:
+    def write_tensor(self, slot_id: int, tensor: np.ndarray | list[np.ndarray], role: str) -> None:
+        tensors = tensor if isinstance(tensor, list) else [tensor]
         self._validate(slot_id, role)
         header = self._headers[slot_id]
-        shape = tensor.shape
 
-        if tensor.size > self.max_elems:
-            raise ValueError(f"Tensor too large: {tensor.size} > {self.max_elems}")
-        if tensor.ndim > self._MAX_DIMS:
-            raise ValueError(f"Tensor rank {tensor.ndim} exceeds MAX_DIMS={self._MAX_DIMS}")
+        if len(tensors) > self._MAX_TENSORS:
+            raise ValueError(f"Too many tensors: {len(tensors)} > MAX_TENSORS={self._MAX_TENSORS}")
 
-        header['dtype_code'] = self._encode_dtype(tensor.dtype)
-        header['ndim'] = tensor.ndim
-        header['nbytes'] = np.int64(tensor.nbytes)
-        header['shape'][:tensor.ndim] = shape
-        if tensor.ndim < self._MAX_DIMS:
-            header['shape'][tensor.ndim:] = 0  # zero-fill unused dims
+        offset = 0
+        for i, t in enumerate(tensors):
+            if t.ndim > self._MAX_DIMS:
+                raise ValueError(f"Tensor {i} has too many dims: {t.ndim} > {self._MAX_DIMS}")
+
+            nbytes = t.nbytes
+
+            if offset + nbytes > self.max_elems * self.max_dtype.itemsize:
+                raise ValueError(f"Tensors exceed shared memory buffer capacity at tensor {i} (offset={offset}, size={nbytes})")
+
+            # Write to data buffer directly
+            self._datas[slot_id][offset : offset + nbytes] = t.tobytes()
+
+            # Write header fields
+            header['dtype_codes'][i] = self._encode_dtype(t.dtype)
+            header['ndims'][i] = t.ndim
+            header['nbytess'][i] = nbytes
+            header['shapes'][i, :t.ndim] = t.shape
+            if t.ndim < self._MAX_DIMS:
+                header['shapes'][i, t.ndim:] = 0
+
+            offset += nbytes
+
+        header['num_tensors'] = len(tensors)
         header['status'] = 1 - self._ROLE_MAP[role]
+        self._debug(f"{role} wrote {len(tensors)} tensor(s) to slot {slot_id} (total {offset} bytes)")
 
-        self._datas[slot_id][:tensor.nbytes] = tensor.tobytes()
-        self._debug(f"{role} wrote tensor of shape {shape} to slot {slot_id} with header {header}")
-
-    def read_tensor(self, slot_id: int, role: str) -> np.ndarray | None:
+    def read_tensor(self, slot_id: int, role: str) -> np.ndarray | list[np.ndarray] | None:
         self._validate(slot_id, role)
         header = self._headers[slot_id]
 
@@ -85,23 +101,30 @@ class SharedMemoryTransport(Transport):
             self._debug(f"{role} found no tensor to read in slot {slot_id}")
             return None
 
-        dtype = self._resolve_dtype(header['dtype_code'])
-        ndim = int(header['ndim'])
-        nbytes = int(header['nbytes'])
-        shape = tuple(int(d) for d in header['shape'][:ndim])
+        num_tensors = int(header['num_tensors'])
+        if not (1 <= num_tensors <= self._MAX_TENSORS):
+            raise ValueError(f"Invalid num_tensors: {num_tensors}")
 
-        expected_elems = np.prod(shape, dtype=np.int64)
-        expected_nbytes = expected_elems * dtype.itemsize
+        tensors = []
+        offset = 0
 
-        if expected_nbytes != nbytes:
-            raise ValueError(f"Inconsistent nbytes in header: expected {expected_nbytes}, found {nbytes}")
-        if expected_elems > self.max_elems:
-            raise ValueError(f"Tensor too large: {shape} (max_elems = {self.max_elems})")
+        for i in range(num_tensors):
+            dtype = self._resolve_dtype(header['dtype_codes'][i])
+            ndim = int(header['ndims'][i])
+            nbytes = int(header['nbytess'][i])
+            shape = tuple(int(d) for d in header['shapes'][i, :ndim])
 
-        data = self._datas[slot_id][:nbytes]
-        tensor = np.frombuffer(data, dtype=dtype).reshape(shape).copy()
-        self._debug(f"{role} read tensor of shape {shape} from slot {slot_id} with header {header}")
-        return tensor
+            if offset + nbytes > len(self._datas[slot_id]):
+                raise ValueError(f"Tensor {i} exceeds buffer bounds: offset={offset}, nbytes={nbytes}")
+
+            buf = self._datas[slot_id][offset : offset + nbytes]
+            tensor = np.frombuffer(buf, dtype=dtype).reshape(shape).copy()
+            tensors.append(tensor)
+            offset += nbytes
+
+        self._debug(f"{role} read {num_tensors} tensor(s) from slot {slot_id}")
+
+        return tensors[0] if num_tensors == 1 else tensors
 
     def is_ready(self, slot_id: int, role: str) -> bool:
         self._validate(slot_id, role)

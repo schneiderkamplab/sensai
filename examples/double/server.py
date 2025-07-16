@@ -7,7 +7,9 @@ from sensai.transports.unix_socket import UnixSocketTransport
 
 def process_fn(tensor):
     print(f"[Server] Received tensor: {tensor}")
-    return tensor * 2
+    tensors = tensor if isinstance(tensor, list) else [tensor]
+    tensors = [t * 2 for t in tensors]
+    return tensors
 
 @click.command()
 @click.option("--transport", type=click.Choice(["shm", "pipe", "socket"]), default="shm", help="Transport type")
