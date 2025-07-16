@@ -41,7 +41,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "Starting teacher server..."
-echo "Command: uv run python -m sensai.logits_server --model google/gemma-3-1b-it --device cpu --transport shared_memory --num-clients 1"
+echo "Command: uv run python -m sensai.logits_server --model google/gemma-3-1b-it --device cpu --transport shared_memory --num-clients 1 --max-nbytes 3000000000 --max-tensors 8 --max-dims 8"
 echo ""
 
 # Start the teacher server in the background
@@ -51,7 +51,9 @@ uv run python -m sensai.logits_server \
     --transport shared_memory \
     --num-clients 1 \
     --shm-path /tmp/sensai_teacher_shm \
-    --max-elems 3000000000 \
+    --max-nbytes 3000000000 \
+    --max-tensors 8 \
+    --max-dims 8 \
     --interval 0.1 &
 
 SERVER_PID=$!

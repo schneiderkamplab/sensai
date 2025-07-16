@@ -351,8 +351,12 @@ if __name__ == "__main__":
                         help="Directory for named pipes (auto-generated if not specified)")
     parser.add_argument("--shm-path", type=str, default="/tmp/sensai_teacher_shm",
                         help="Path for shared memory file")
-    parser.add_argument("--max-elems", type=int, default=1000000,
-                        help="Maximum elements per tensor for shared memory")
+    parser.add_argument("--max-nbytes", type=int, default=1000000000,
+                        help="Maximum bytes for shared memory buffer")
+    parser.add_argument("--max-tensors", type=int, default=4,
+                        help="Maximum number of tensors per message")
+    parser.add_argument("--max-dims", type=int, default=8,
+                        help="Maximum number of dimensions per tensor")
     parser.add_argument("--interval", type=float, default=0.001,
                         help="Server polling interval in seconds")
     
@@ -385,8 +389,9 @@ if __name__ == "__main__":
         "num_clients": args.num_clients,
         "pipe_dir": args.pipe_dir,
         "shm_path": args.shm_path,
-        "max_elems": args.max_elems,
-        "max_dtype": np.float32
+        "max_nbytes": args.max_nbytes,
+        "max_tensors": args.max_tensors,
+        "max_dims": args.max_dims
     }
     
     transport, cleanup_path = create_transport(args.transport, **transport_kwargs)

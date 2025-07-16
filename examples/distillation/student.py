@@ -15,7 +15,6 @@ from transformers import (
     get_linear_schedule_with_warmup
 )
 from datasets import load_dataset
-import numpy as np
 
 # Add the parent directory to the path to import sensai
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -55,13 +54,14 @@ def create_simple_dataset(tokenizer, max_length=32, num_samples=100):
     return tokenized_dataset
 
 
-def distillation_loss(student_logits, teacher_logits, labels, temperature=3.0, alpha=0.5):
+def distillation_loss(student_logits, teacher_indices, teacher_values, labels, temperature=3.0, alpha=0.5):
     """
-    Compute knowledge distillation loss.
+    Compute knowledge distillation loss using sparse teacher logits.
     
     Args:
         student_logits: Logits from student model [batch_size, seq_len, vocab_size]
-        teacher_logits: Logits from teacher model [batch_size, seq_len, vocab_size]
+        teacher_indices: Sampled token indices from teacher [batch_size, seq_len-1, num_samples]
+        teacher_values: Sampled logit values from teacher [batch_size, seq_len-1, num_samples]
         labels: Ground truth token IDs [batch_size, seq_len]
         temperature: Temperature for softmax
         alpha: Weighting factor for distillation loss
@@ -69,21 +69,49 @@ def distillation_loss(student_logits, teacher_logits, labels, temperature=3.0, a
     Returns:
         Combined loss (distillation + task loss)
     """
-    # Reshape logits to [batch_size * seq_len, vocab_size] for loss computation
     batch_size, seq_len, vocab_size = student_logits.shape
-    student_logits_flat = student_logits.view(-1, vocab_size)
-    teacher_logits_flat = teacher_logits.view(-1, vocab_size)
-    labels_flat = labels.view(-1)
     
     # Task loss (standard cross-entropy)
+    student_logits_flat = student_logits.reshape(-1, vocab_size)
+    labels_flat = labels.reshape(-1)
     task_loss = F.cross_entropy(student_logits_flat, labels_flat, ignore_index=-100)
     
-    # Distillation loss (KL divergence between student and teacher)
-    teacher_probs = F.softmax(teacher_logits_flat / temperature, dim=-1)
-    student_log_probs = F.log_softmax(student_logits_flat / temperature, dim=-1)
+    # For KL divergence, we need to align teacher and student logits
+    # Teacher logits are for positions 0 to seq_len-1, student logits are for positions 0 to seq_len-1 too
+    # We'll use the student logits for positions 0 to seq_len-1 to match teacher
+    if seq_len > 1:
+        student_logits_for_kl = student_logits[:, :-1, :]  # Remove last position to match teacher
+    else:
+        student_logits_for_kl = student_logits
     
-    # KL divergence loss
-    kl_loss = F.kl_div(student_log_probs, teacher_probs, reduction='batchmean')
+    # Reshape for efficient computation
+    student_logits_kl_flat = student_logits_for_kl.reshape(-1, vocab_size)  # [batch_size * (seq_len-1), vocab_size]
+    teacher_indices_flat = teacher_indices.reshape(-1, teacher_indices.shape[-1])  # [batch_size * (seq_len-1), num_samples]
+    teacher_values_flat = teacher_values.reshape(-1, teacher_values.shape[-1])  # [batch_size * (seq_len-1), num_samples]
+    
+    # Compute KL divergence efficiently using sparse teacher logits
+    # We'll use the teacher samples to compute a sparse KL divergence
+    student_log_probs = F.log_softmax(student_logits_kl_flat / temperature, dim=-1)
+    
+    # For each position, gather student log probabilities at teacher-sampled positions
+    # teacher_indices_flat: [batch_size * (seq_len-1), num_samples]
+    # student_log_probs: [batch_size * (seq_len-1), vocab_size]
+    
+    # Gather student log probabilities at teacher-sampled indices
+    student_log_probs_sampled = torch.gather(
+        student_log_probs, 
+        dim=1, 
+        index=teacher_indices_flat
+    )  # [batch_size * (seq_len-1), num_samples]
+    
+    # Convert teacher logit values to probabilities
+    teacher_probs_sampled = F.softmax(teacher_values_flat / temperature, dim=-1)
+    
+    # Compute KL divergence using the sampled positions
+    # KL(P || Q) = sum(P * log(P/Q))
+    # For sparse case: approximate by using only the sampled positions
+    kl_loss = torch.sum(teacher_probs_sampled * (torch.log(teacher_probs_sampled + 1e-8) - student_log_probs_sampled))
+    kl_loss = kl_loss / (batch_size * (seq_len - 1))  # Normalize by batch size and sequence length
     
     # Combine losses
     total_loss = alpha * (temperature ** 2) * kl_loss + (1 - alpha) * task_loss
@@ -140,7 +168,13 @@ def main():
     # Set up SensAI client
     print("Setting up SensAI client...")
     shm_path = "/tmp/sensai_teacher_shm"
-    transport = SharedMemoryTransport(shm_path=shm_path, num_clients=1, max_elems=3_000_000_000, max_dtype=np.float32)
+    transport = SharedMemoryTransport(
+        shm_path=shm_path, 
+        num_clients=1, 
+        max_nbytes=3_000_000_000,
+        max_tensors=8,
+        max_dims=8
+    )
     client = SensAIClient(transport, slot_id=0)
     
     # Wrap the collate function
@@ -185,12 +219,14 @@ def main():
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             
-            # Check if we have teacher logits
-            if "teacher_logits" in batch:
-                teacher_logits = torch.from_numpy(batch["teacher_logits"]).to(device)
-                print(f"Step {step + 1}: Using teacher logits (shape: {teacher_logits.shape})")
+            # Check if we have teacher logits (new format: indices and values)
+            if "teacher_logits_indices" in batch and "teacher_logits_values" in batch:
+                teacher_indices = torch.from_numpy(batch["teacher_logits_indices"]).to(device)
+                teacher_values = torch.from_numpy(batch["teacher_logits_values"]).to(device)
+                print(f"Step {step + 1}: Using teacher logits (indices: {teacher_indices.shape}, values: {teacher_values.shape})")
             else:
-                teacher_logits = None
+                teacher_indices = None
+                teacher_values = None
                 print(f"Step {step + 1}: No teacher logits available")
             
             # Forward pass through student
@@ -203,16 +239,10 @@ def main():
             student_logits = student_outputs.logits
             
             # Compute loss
-            if teacher_logits is not None:
-                # Ensure teacher_logits has the right shape
-                if teacher_logits.dim() == 1:
-                    # Reshape sparse tensor output to [batch_size, seq_len, vocab_size]
-                    vocab_size = student_logits.shape[-1]
-                    teacher_logits = teacher_logits.view(batch_size, -1, vocab_size)
-                
-                # Knowledge distillation loss
+            if teacher_indices is not None and teacher_values is not None:
+                # Knowledge distillation loss using sparse teacher logits
                 loss, task_loss, kl_loss = distillation_loss(
-                    student_logits, teacher_logits, input_ids, temperature, alpha
+                    student_logits, teacher_indices, teacher_values, input_ids, temperature, alpha
                 )
                 total_task_loss += task_loss.item()
                 total_kl_loss += kl_loss.item()
@@ -232,7 +262,7 @@ def main():
             total_loss += loss.item()
             
             print(f"  Step {step + 1}: Loss = {loss.item():.4f}")
-            if teacher_logits is not None:
+            if teacher_indices is not None and teacher_values is not None:
                 print(f"    Task Loss = {task_loss.item():.4f}, KL Loss = {kl_loss.item():.4f}")
         
         avg_loss = total_loss / len(dataloader)

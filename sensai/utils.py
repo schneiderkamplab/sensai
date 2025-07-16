@@ -165,13 +165,15 @@ def create_transport(transport_type: str, **kwargs):
     elif transport_type == "shared_memory":
         shm_path = kwargs.get("shm_path", "/tmp/sensai_teacher_shm")
         num_clients = kwargs.get("num_clients", 4)
-        max_elems = kwargs.get("max_elems", 1000000)
-        max_dtype = kwargs.get("max_dtype", np.float32)
+        max_nbytes = kwargs.get("max_nbytes", 1000000000)
+        max_tensors = kwargs.get("max_tensors", 4)
+        max_dims = kwargs.get("max_dims", 8)
         return SharedMemoryTransport(
             shm_path=shm_path, 
             num_clients=num_clients, 
-            max_elems=max_elems, 
-            max_dtype=max_dtype
+            max_nbytes=max_nbytes, 
+            max_tensors=max_tensors,
+            max_dims=max_dims
         ), shm_path
     
     else:
