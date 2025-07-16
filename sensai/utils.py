@@ -134,7 +134,9 @@ def _request_teacher_logits_with_retry(
 def create_transport(transport_type: str, **kwargs):
     """Create transport based on type and arguments"""
     if transport_type == "named_pipe":
-        pipe_dir = kwargs.get("pipe_dir", tempfile.mkdtemp(prefix="sensai_teacher_"))
+        pipe_dir = kwargs.get("pipe_dir")
+        if pipe_dir is None:
+            pipe_dir = tempfile.mkdtemp(prefix="sensai_teacher_")
         num_clients = kwargs.get("num_clients", 4)
         return NamedPipeTransport(pipe_dir=pipe_dir, num_clients=num_clients), pipe_dir
     

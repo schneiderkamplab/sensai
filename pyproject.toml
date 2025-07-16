@@ -23,7 +23,8 @@ dependencies = [
     'click',
     'numpy',
     'torch',
-    'transformers'
+    'transformers',
+    "datasets",
 ]
 
 [project.optional-dependencies]
