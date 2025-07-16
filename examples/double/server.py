@@ -15,12 +15,10 @@ def process_fn(tensor):
 @click.option("--transport", type=click.Choice(["shm", "pipe", "socket"]), default="shm", help="Transport type")
 @click.option("--path", default="shm.bin", help="Path to shared memory file or pipe")
 @click.option("--num-clients", type=int, default=1, help="Number of client slots")
-@click.option("--max-elems", type=int, default=1024, help="Maximum number of elements per tensor")
-@click.option("--dtype", default="float32", help="Tensor dtype (e.g. float32, int32)")
-def run_server(transport, path, num_clients, max_elems, dtype):
-    dtype = np.dtype(dtype)
+@click.option("--max-nbytes", type=int, default=4*1024**3, help="Maximum number of bytes for each transport slot")
+def run_server(transport, path, num_clients, max_nbytes):
     if transport == "shm":
-        ctx = SharedMemoryTransport(path, num_clients=num_clients, max_elems=max_elems, max_dtype=dtype)
+        ctx = SharedMemoryTransport(path, num_clients=num_clients, max_nbytes=max_nbytes)
     elif transport == "pipe":
         ctx = NamedPipeTransport(path, num_clients=num_clients)
     elif transport == "socket":

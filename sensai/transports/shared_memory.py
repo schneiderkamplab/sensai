@@ -13,43 +13,49 @@ class SharedMemoryTransport(Transport):
         "server": 1
     }
 
-    _MAX_TENSORS = 4
-    _MAX_DIMS = 8
-    _HEADER_DTYPE = np.dtype([
-        ('status', np.int8),
-        ('num_tensors', np.int8),
-        ('dtype_codes', (np.int8, _MAX_TENSORS)),
-        ('ndims', (np.int8, _MAX_TENSORS)),
-        ('nbytess', (np.int64, _MAX_TENSORS)),  # yes, plural ugly name, for consistency
-        ('shapes', (np.int8, (_MAX_TENSORS, _MAX_DIMS)))
-    ])
+    _CACHE_ALIGNMENT = 256
 
-    def __init__(self, shm_path: str, num_clients: int, max_elems: int, max_dtype: np.dtype, debug: bool = True):
+    def __init__(
+        self,
+        shm_path: str,
+        num_clients: int,
+        max_nbytes: int,
+        debug: bool = True,
+        max_tensors: int = 4,
+        max_dims: int = 8
+    ):
         self.shm_path = shm_path
         self._num_clients = num_clients
-        self.max_elems = max_elems
-        self.max_dtype = np.dtype(max_dtype)
+        self.max_nbytes = max_nbytes
         self.debug = debug
-        self._header_size = 256  # fixed header size for cache alignment
-        assert self._HEADER_DTYPE.itemsize <= self._header_size, \
-            f"Header dtype size {self._HEADER_DTYPE.itemsize} exceeds buffer size {self._header_size}"
-        self._slot_size = self._header_size + max_elems * self.max_dtype.itemsize
+        self._max_tensors = max_tensors
+        self._max_dims = max_dims
+        header_dtype = np.dtype([
+            ('status', np.int8),
+            ('num_tensors', np.int8),
+            ('dtype_codes', (np.int8, self._max_tensors)),
+            ('ndims', (np.int8, self._max_tensors)),
+            ('nbytess', (np.int64, self._max_tensors)),
+            ('shapes', (np.int64, (self._max_tensors, self._max_dims)))
+        ])
+        self._header_size = -(-header_dtype.itemsize // self._CACHE_ALIGNMENT) * self._CACHE_ALIGNMENT
+        assert header_dtype.itemsize <= self._header_size, \
+            f"Header dtype size {header_dtype.itemsize} exceeds buffer size {self._header_size}"
+
+        self._slot_size = self._header_size + max_nbytes
         self._fd = os.open(shm_path, os.O_CREAT | os.O_RDWR)
         os.ftruncate(self._fd, self._num_clients * self._slot_size)
         self._mmap = mmap.mmap(self._fd, self._num_clients * self._slot_size)
         self._headers = {}
         self._datas = {}
-        self._init(0)
-
-    def _init(self, from_slot):
-        self._debug(f"Initializing shared memory transport with {self._num_clients} clients starting from slot {from_slot}")
-        for slot_id in range(from_slot, self._num_clients):
+        self._debug(f"Initializing shared memory transport with {self._num_clients} clients")
+        for slot_id in range(self._num_clients):
             offset = slot_id * self._slot_size
             header_buf = memoryview(self._mmap)[offset : offset + self._header_size]
             data_buf = memoryview(self._mmap)[offset + self._header_size : offset + self._slot_size]
             self._debug(f"Setting up slot {slot_id} with header at {offset} and data at {offset + self._header_size}")
             self._debug(f"Header buffer size: {len(header_buf)}, Data buffer size: {len(data_buf)}")
-            header = np.frombuffer(header_buf, dtype=self._HEADER_DTYPE, count=1)[0]
+            header = np.frombuffer(header_buf, dtype=header_dtype, count=1)[0]
             header['status'] = self._ROLE_MAP["client"]
             self._headers[slot_id] = header
             self._datas[slot_id] = data_buf
@@ -63,17 +69,17 @@ class SharedMemoryTransport(Transport):
         self._validate(slot_id, role)
         header = self._headers[slot_id]
 
-        if len(tensors) > self._MAX_TENSORS:
-            raise ValueError(f"Too many tensors: {len(tensors)} > MAX_TENSORS={self._MAX_TENSORS}")
+        if len(tensors) > self._max_tensors:
+            raise ValueError(f"Too many tensors: {len(tensors)} > max_tensors={self._max_tensors}")
 
         offset = 0
         for i, t in enumerate(tensors):
-            if t.ndim > self._MAX_DIMS:
-                raise ValueError(f"Tensor {i} has too many dims: {t.ndim} > {self._MAX_DIMS}")
+            if t.ndim > self._max_dims:
+                raise ValueError(f"Tensor {i} has too many dims: {t.ndim} > max_dims={self._max_dims}")
 
             nbytes = t.nbytes
 
-            if offset + nbytes > self.max_elems * self.max_dtype.itemsize:
+            if offset + nbytes > self.max_nbytes:
                 raise ValueError(f"Tensors exceed shared memory buffer capacity at tensor {i} (offset={offset}, size={nbytes})")
 
             # Write to data buffer directly
@@ -84,7 +90,7 @@ class SharedMemoryTransport(Transport):
             header['ndims'][i] = t.ndim
             header['nbytess'][i] = nbytes
             header['shapes'][i, :t.ndim] = t.shape
-            if t.ndim < self._MAX_DIMS:
+            if t.ndim < self._max_dims:
                 header['shapes'][i, t.ndim:] = 0
 
             offset += nbytes
@@ -102,7 +108,7 @@ class SharedMemoryTransport(Transport):
             return None
 
         num_tensors = int(header['num_tensors'])
-        if not (1 <= num_tensors <= self._MAX_TENSORS):
+        if not (1 <= num_tensors <= self._max_tensors):
             raise ValueError(f"Invalid num_tensors: {num_tensors}")
 
         tensors = []
@@ -123,7 +129,6 @@ class SharedMemoryTransport(Transport):
             offset += nbytes
 
         self._debug(f"{role} read {num_tensors} tensor(s) from slot {slot_id}")
-
         return tensors[0] if num_tensors == 1 else tensors
 
     def is_ready(self, slot_id: int, role: str) -> bool:
