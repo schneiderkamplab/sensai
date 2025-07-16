@@ -1,10 +1,11 @@
 import click
 import numpy as np
 from sensai.client import SensAIClient
+from sensai.transports.named_pipe import NamedPipeTransport
 from sensai.transports.shared_memory import SharedMemoryTransport
 
 @click.command()
-@click.option("--transport", type=click.Choice(["shm"]), default="shm", help="Transport type")
+@click.option("--transport", type=click.Choice(["shm", "pipe"]), default="shm", help="Transport type")
 @click.option("--path", default="shm.bin", help="Path to shared memory file or pipe")
 @click.option("--slot-id", type=int, default=0, help="Client slot ID")
 @click.option("--num-clients", type=int, default=1, help="Number of client slots")
@@ -17,11 +18,20 @@ def run_client(transport, path, slot_id, num_clients, max_elems, dtype, values):
     if tensor.size > max_elems:
         raise ValueError(f"Tensor size {tensor.size} exceeds max allowed {max_elems}")
     if transport == "shm":
-        with SharedMemoryTransport(path, num_clients=num_clients, max_elems=max_elems, max_dtype=dtype) as t:
-            client = SensAIClient(t, slot_id=slot_id)
-            print(f"[Client] Sending tensor: {tensor}")
+        ctx = SharedMemoryTransport(path, num_clients=num_clients, max_elems=max_elems, max_dtype=dtype)
+    elif transport == "pipe":
+        ctx = NamedPipeTransport(path, num_clients=num_clients)    
+    with ctx as t:
+        client = SensAIClient(t, slot_id=slot_id)
+        print(f"[Client] Sending tensor: {tensor}")
+        try:
             result = client.send_tensor(tensor)
-            print(f"[Client] Received result: {result}")
+        except Exception as e:
+            print(f"[Client] Error sending tensor: {e}")
+            return
+        finally:
+            print("[Client] Finished sending tensor.")
+        print(f"[Client] Received result: {result}")
 
 if __name__ == "__main__":
     run_client()
