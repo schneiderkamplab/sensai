@@ -28,7 +28,7 @@ def run_client(transport, path, slot_id, num_clients, max_elems, dtype, values):
         client = SensAIClient(t, slot_id=slot_id)
         print(f"[Client] Sending tensor: {tensor}")
         try:
-            result = client.send_tensor([tensor, tensor * 2])  # Example of sending a list of tensors
+            result = client.send_tensor([tensor, tensor.astype(np.int64)])  # Example of sending a list of tensors
         except Exception as e:
             print(f"[Client] Error sending tensor: {e}")
             return
