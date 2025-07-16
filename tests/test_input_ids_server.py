@@ -41,10 +41,11 @@ def test_input_ids_processing():
     
     # Test process_input_ids
     print("\nTesting process_input_ids...")
-    sparse_result = server.process_input_ids(input_ids)
-    print(f"Sparse tensor shape: {sparse_result.shape}")
-    print(f"Sparse tensor nnz: {sparse_result._nnz()}")
-    print(f"Expected shape: [num_samples={server.num_samples}, seq_len={input_ids.shape[1]-1}, vocab_size={server.vocab_size}]")
+    indices, values = server.process_input_ids(input_ids)
+    print(f"Indices shape: {indices.shape}")
+    print(f"Values shape: {values.shape}")
+    print(f"Expected indices shape: [batch_size={input_ids.shape[0]}, seq_len={input_ids.shape[1]-1}, num_samples={server.num_samples}]")
+    print(f"Expected values shape: [batch_size={input_ids.shape[0]}, seq_len={input_ids.shape[1]-1}, num_samples={server.num_samples}]")
     
     # Test batch processing
     print("\nTesting batch processing...")

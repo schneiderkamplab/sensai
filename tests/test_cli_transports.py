@@ -43,12 +43,11 @@ class TestCLITransports:
             transport = SharedMemoryTransport(
                 shm_path=shm_path,
                 num_clients=2,
-                max_elems=1000,
-                max_dtype=np.float32
+                max_nbytes=1000000
             )
             assert transport.num_clients == 2
             assert transport.shm_path == shm_path
-            assert transport.max_elems == 1000
+            assert transport.max_nbytes == 1000000
             
             # Test the transport has required methods
             assert hasattr(transport, 'is_ready')
@@ -93,11 +92,10 @@ class TestCLITransports:
                 "shared_memory",
                 shm_path=shm_path,
                 num_clients=3,
-                max_elems=500000,
-                max_dtype=np.float32
+                max_nbytes=500000
             )
             assert transport.num_clients == 3
-            assert transport.max_elems == 500000
+            assert transport.max_nbytes == 500000
             assert cleanup_path == shm_path
             assert isinstance(transport, SharedMemoryTransport)
             
@@ -175,8 +173,7 @@ class TestCLITransports:
             shm_transport = SharedMemoryTransport(
                 shm_path=shm_path,
                 num_clients=2,
-                max_elems=1000,
-                max_dtype=np.float32
+                max_nbytes=1000000
             )
             
             # Verify they have the same interface
