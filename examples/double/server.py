@@ -3,13 +3,14 @@ import numpy as np
 from sensai.server import SensAIServer
 from sensai.transports.named_pipe import NamedPipeTransport
 from sensai.transports.shared_memory import SharedMemoryTransport
+from sensai.transports.unix_socket import UnixSocketTransport
 
 def process_fn(tensor):
     print(f"[Server] Received tensor: {tensor}")
     return tensor * 2
 
 @click.command()
-@click.option("--transport", type=click.Choice(["shm", "pipe"]), default="shm", help="Transport type")
+@click.option("--transport", type=click.Choice(["shm", "pipe", "socket"]), default="shm", help="Transport type")
 @click.option("--path", default="shm.bin", help="Path to shared memory file or pipe")
 @click.option("--num-clients", type=int, default=1, help="Number of client slots")
 @click.option("--max-elems", type=int, default=1024, help="Maximum number of elements per tensor")
@@ -20,6 +21,8 @@ def run_server(transport, path, num_clients, max_elems, dtype):
         ctx = SharedMemoryTransport(path, num_clients=num_clients, max_elems=max_elems, max_dtype=dtype)
     elif transport == "pipe":
         ctx = NamedPipeTransport(path, num_clients=num_clients)
+    elif transport == "socket":
+        ctx = UnixSocketTransport(path, num_clients=num_clients, server_mode=True)
     with ctx as t:
         server = SensAIServer(t)
         print("[Server] Starting server loop")
