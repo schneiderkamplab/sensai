@@ -19,7 +19,7 @@ def run_client(transport, path, slot_id, num_clients, dtype):
     max_elems = tensor.size  # Must match transport init
     print(f"[Client] Generated tensor of shape {tensor.shape}, dtype={dtype}, size={tensor.nbytes / 1e6:.2f} MB")
     if transport == "shm":
-        ctx = SharedMemoryTransport(path, num_clients=num_clients, max_elems=max_elems, max_dtype=dtype)
+        ctx = SharedMemoryTransport(path, num_clients=num_clients, max_nbytes=max_elems * dtype.itemsize)
     elif transport == "pipe":
         ctx = NamedPipeTransport(path, num_clients=num_clients)
     elif transport == "socket":

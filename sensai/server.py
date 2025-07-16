@@ -13,7 +13,7 @@ class SensAIServer:
             return False
         input_tensor = self.transport.read_tensor(slot_id, role="server")
         output_tensor = fn(input_tensor)
-        if not isinstance(output_tensor, np.ndarray):
+        if not isinstance(output_tensor, np.ndarray) and not (isinstance(output_tensor, list) and all(isinstance(t, np.ndarray) for t in output_tensor)):
             raise ValueError("Processing function must return a NumPy ndarray.")
         self.transport.write_tensor(slot_id, output_tensor, role="server")
         return True
