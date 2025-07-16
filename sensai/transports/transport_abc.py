@@ -9,11 +9,11 @@ class Transport(ABC):
         ...
 
     @abstractmethod
-    def read_tensor(self, slot_id: int, role: str) -> np.ndarray:
+    def read_tensor(self, slot_id: int, role: str) -> np.ndarray | list[np.ndarray] | None:
         ...
 
     @abstractmethod
-    def write_tensor(self, slot_id: int, tensor: np.ndarray, role: str) -> None:
+    def write_tensor(self, slot_id: int, tensor: np.ndarray | list[np.ndarray], role: str, is_last: bool) -> None:
         ...
 
     @property

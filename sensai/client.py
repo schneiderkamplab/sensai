@@ -9,7 +9,7 @@ class SensAIClient:
         self.transport = transport
         self.slot_id = slot_id
 
-    def send_tensor(self, tensor: np.ndarray, interval: float = 0.001) -> np.ndarray:
+    def send_tensor(self, tensor: np.ndarray | list[np.ndarray], interval: float = 0.001) -> np.ndarray:
         self.transport.write_tensor(self.slot_id, tensor, role="client")
         while not self.transport.is_ready(self.slot_id, role="client"):
             time.sleep(interval)
