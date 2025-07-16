@@ -5,7 +5,7 @@ import pytest
 import numpy as np
 import warnings
 from unittest.mock import Mock, patch
-from sensai.collate_functions import wrap_collate_function, _request_teacher_logits_with_retry
+from sensai.utils import wrap_collate_function, _request_teacher_logits_with_retry
 from sensai.client import SensAIClient
 
 
