@@ -22,8 +22,6 @@ def run_client(transport, path, slot_id, num_clients, dtype):
         ctx = SharedMemoryTransport(path, num_clients=num_clients, max_nbytes=max_elems * dtype.itemsize)
     elif transport == "pipe":
         ctx = NamedPipeTransport(path, num_clients=num_clients)
-    elif transport == "socket":
-        ctx = UnixSocketTransport(path, num_clients=num_clients, server_mode=False)
     with ctx as t:
         client = SensAIClient(t, slot_id=slot_id)
         print("[Client] Sending tensor...")

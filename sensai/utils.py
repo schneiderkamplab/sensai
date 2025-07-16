@@ -138,7 +138,7 @@ def create_transport(transport_type: str, **kwargs):
         if pipe_dir is None:
             pipe_dir = tempfile.mkdtemp(prefix="sensai_teacher_")
         num_clients = kwargs.get("num_clients", 4)
-        return NamedPipeTransport(pipe_dir=pipe_dir, num_clients=num_clients), pipe_dir
+        return NamedPipeTransport(path=pipe_dir, num_clients=num_clients), pipe_dir
     
     elif transport_type == "shared_memory":
         shm_path = kwargs.get("shm_path", "/tmp/sensai_teacher_shm")
@@ -146,7 +146,7 @@ def create_transport(transport_type: str, **kwargs):
         max_elems = kwargs.get("max_elems", 1000000)
         max_dtype = kwargs.get("max_dtype", np.float32)
         return SharedMemoryTransport(
-            shm_path=shm_path, 
+            path=shm_path, 
             num_clients=num_clients, 
             max_elems=max_elems, 
             max_dtype=max_dtype

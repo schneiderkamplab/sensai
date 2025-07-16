@@ -18,11 +18,9 @@ def process_fn(tensor):
 @click.option("--max-nbytes", type=int, default=4*1024**3, help="Maximum number of bytes for each transport slot")
 def run_server(transport, path, num_clients, max_nbytes):
     if transport == "shm":
-        ctx = SharedMemoryTransport(path, num_clients=num_clients, max_nbytes=max_nbytes)
+        ctx = SharedMemoryTransport(path, num_clients=num_clients, is_server=True, max_nbytes=max_nbytes)
     elif transport == "pipe":
-        ctx = NamedPipeTransport(path, num_clients=num_clients)
-    elif transport == "socket":
-        ctx = UnixSocketTransport(path, num_clients=num_clients, server_mode=True)
+        ctx = NamedPipeTransport(path, num_clients=num_clients, is_server=True)
     with ctx as t:
         server = SensAIServer(t)
         print("[Server] Starting server loop")

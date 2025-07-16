@@ -9,13 +9,13 @@ class SensAIServer:
         self.transport = transport
 
     def process_slot(self, slot_id: int, fn) -> bool:
-        if not self.transport.is_ready(slot_id, role="server"):
+        if not self.transport.is_ready(slot_id):
             return False
-        input_tensor = self.transport.read_tensor(slot_id, role="server")
+        input_tensor = self.transport.read_tensor(slot_id)
         output_tensor = fn(input_tensor)
         if not isinstance(output_tensor, np.ndarray) and not (isinstance(output_tensor, list) and all(isinstance(t, np.ndarray) for t in output_tensor)):
             raise ValueError("Processing function must return a NumPy ndarray.")
-        self.transport.write_tensor(slot_id, output_tensor, role="server")
+        self.transport.write_tensor(slot_id, output_tensor)
         return True
 
     def run_loop(self, fn, interval: float = 0.001):

@@ -22,9 +22,9 @@ class TestCLITransports:
         """Test creating named pipe transport"""
         pipe_dir = tempfile.mkdtemp(prefix='test_sensai_')
         try:
-            transport = NamedPipeTransport(pipe_dir=pipe_dir, num_clients=2)
+            transport = NamedPipeTransport(path=pipe_dir, num_clients=2)
             assert transport.num_clients == 2
-            assert transport.pipe_dir == pipe_dir
+            assert transport.path == pipe_dir
             
             # Verify pipes were created
             for slot_id in range(2):
@@ -41,13 +41,13 @@ class TestCLITransports:
         shm_path = "/tmp/test_sensai_shm"
         try:
             transport = SharedMemoryTransport(
-                shm_path=shm_path,
+                path=shm_path,
                 num_clients=2,
                 max_elems=1000,
                 max_dtype=np.float32
             )
             assert transport.num_clients == 2
-            assert transport.shm_path == shm_path
+            assert transport.path == shm_path
             assert transport.max_elems == 1000
             
             # Test the transport has required methods
@@ -171,9 +171,9 @@ class TestCLITransports:
         
         try:
             # Create both transports
-            pipe_transport = NamedPipeTransport(pipe_dir=pipe_dir, num_clients=2)
+            pipe_transport = NamedPipeTransport(path=pipe_dir, num_clients=2)
             shm_transport = SharedMemoryTransport(
-                shm_path=shm_path,
+                path=shm_path,
                 num_clients=2,
                 max_elems=1000,
                 max_dtype=np.float32

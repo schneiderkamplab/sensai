@@ -20,16 +20,16 @@ def run_client(transport, path, slot_id, num_clients, max_nbytes, values):
         ctx = SharedMemoryTransport(path, num_clients=num_clients, max_nbytes=max_nbytes)
     elif transport == "pipe":
         ctx = NamedPipeTransport(path, num_clients=num_clients)
-    elif transport == "socket":
-        ctx = UnixSocketTransport(path, num_clients=num_clients, server_mode=False)
     with ctx as t:
         client = SensAIClient(t, slot_id=slot_id)
         print(f"[Client] Sending tensor: {tensor}")
+        if t.supports_multi_tensor():
+            tensor = [tensor, tensor.astype(np.int64)]
         try:
-            result = client.send_tensor([tensor, tensor.astype(np.int64)])  # Example of sending a list of tensors
+            result = client.send_tensor(tensor)
         except Exception as e:
             print(f"[Client] Error sending tensor: {e}")
-            return
+            raise e
         finally:
             print("[Client] Finished sending tensor.")
         print(f"[Client] Received result: {result}")
