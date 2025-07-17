@@ -22,8 +22,8 @@ class TestCLITransports:
         """Test creating named pipe transport"""
         pipe_dir = tempfile.mkdtemp(prefix='test_sensai_')
         try:
-            transport = NamedPipeTransport(path=pipe_dir, num_clients=2)
-            assert transport.num_clients == 2
+            transport = NamedPipeTransport(path=pipe_dir, num_slots=2)
+            assert transport.num_slots == 2
             assert transport.path == pipe_dir
             
             # Verify pipes were created
@@ -42,10 +42,10 @@ class TestCLITransports:
         try:
             transport = SharedMemoryTransport(
                 path=shm_path,
-                num_clients=2,
+                num_slots=2,
                 max_nbytes=1000000
             )
-            assert transport.num_clients == 2
+            assert transport.num_slots == 2
             assert transport.path == shm_path
             assert transport.max_nbytes == 1000000
             
@@ -78,7 +78,7 @@ class TestCLITransports:
                 pipe_dir=pipe_dir,
                 num_clients=3
             )
-            assert transport.num_clients == 3
+            assert transport.num_slots == 3
             assert cleanup_path == pipe_dir
             assert isinstance(transport, NamedPipeTransport)
             
@@ -94,7 +94,7 @@ class TestCLITransports:
                 num_clients=3,
                 max_nbytes=500000
             )
-            assert transport.num_clients == 3
+            assert transport.num_slots == 3
             assert transport.max_nbytes == 500000
             assert cleanup_path == shm_path
             assert isinstance(transport, SharedMemoryTransport)
@@ -169,10 +169,10 @@ class TestCLITransports:
         
         try:
             # Create both transports
-            pipe_transport = NamedPipeTransport(path=pipe_dir, num_clients=2)
+            pipe_transport = NamedPipeTransport(path=pipe_dir, num_slots=2)
             shm_transport = SharedMemoryTransport(
                 path=shm_path,
-                num_clients=2,
+                num_slots=2,
                 max_nbytes=1000000
             )
             

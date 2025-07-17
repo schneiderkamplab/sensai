@@ -1,7 +1,18 @@
 from abc import ABC, abstractmethod
 import numpy as np
 
-__all__ = ["Transport"]
+__all__ = ["ClientMixin", "Transport"]
+
+class ClientMixin:
+
+    def write_tensor(self, tensor: np.ndarray | list[np.ndarray]) -> None:
+        self.write_tensor_slot(self.slot_id, tensor)
+
+    def read_tensor(self) -> np.ndarray | list[np.ndarray] | None:
+        return self.read_tensor_slot(self.slot_id)
+
+    def is_ready(self) -> bool:
+        return self.is_ready_slot(self.slot_id)
 
 class Transport(ABC):
 
@@ -14,30 +25,25 @@ class Transport(ABC):
         }.items()
     }
 
-    def __init__(self, path: str, num_slots: int, is_server: bool, debug: bool = True):
+    def __init__(self, path: str, debug: bool = True, is_server: bool = False):
         self.path = path
-        self.num_clients = num_slots
-        self.is_server = is_server
         self.debug = debug
+        self.is_server = is_server
 
     @abstractmethod
-    def is_ready(self, slot_id: int) -> bool:
+    def is_ready_slot(self, slot_id: int) -> bool:
         ...
 
     @abstractmethod
-    def read_tensor(self, slot_id: int) -> np.ndarray | list[np.ndarray] | None:
+    def read_tensor_slot(self, slot_id: int) -> np.ndarray | list[np.ndarray] | None:
         ...
 
     @abstractmethod
-    def write_tensor(self, slot_id: int, tensor: np.ndarray | list[np.ndarray]) -> None:
+    def write_tensor_slot(self, slot_id: int, tensor: np.ndarray | list[np.ndarray]) -> None:
         ...
 
     @abstractmethod
     def close(self) -> None:
-        ...
-
-    @abstractmethod
-    def unlink(self) -> None:
         ...
 
     def supports_multi_tensor(self) -> bool:
@@ -57,12 +63,12 @@ class Transport(ABC):
         raise ValueError(f"Unsupported dtype: {dtype}")
 
     def _validate(self, slot_id: int):
-        if not (0 <= slot_id < self.num_clients):
-            raise ValueError(f"Invalid slot_id: {slot_id}, must be in range [0, {self.num_clients})")
-
-    @property
-    def role(self) -> str:
-        return "server" if self.is_server else "client"
+        if self.is_server:
+            if not (0 <= slot_id < self.num_slots):
+                raise ValueError(f"Invalid slot_id: {slot_id}, must be in range [0, {self.num_slots})")
+        else:
+            if slot_id != self.slot_id:
+                raise ValueError(f"Client can only use slot {self.slot_id}, got {slot_id}")
 
     def __enter__(self):
         return self

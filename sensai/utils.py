@@ -5,7 +5,7 @@ import time
 from typing import Optional
 
 from .client import SensAIClient
-from .transports import NamedPipeTransport, SharedMemoryTransport   
+from .transports import NamedPipeServer, SharedMemoryServer 
 
 
 def wrap_collate_function(
@@ -160,7 +160,7 @@ def create_transport(transport_type: str, **kwargs):
         if pipe_dir is None:
             pipe_dir = tempfile.mkdtemp(prefix="sensai_teacher_")
         num_clients = kwargs.get("num_clients", 4)
-        return NamedPipeTransport(path=pipe_dir, num_clients=num_clients), pipe_dir
+        return NamedPipeServer(path=pipe_dir, num_slots=num_clients), pipe_dir
     
     elif transport_type == "shared_memory":
         shm_path = kwargs.get("shm_path", "/tmp/sensai_teacher_shm")
@@ -168,9 +168,9 @@ def create_transport(transport_type: str, **kwargs):
         max_nbytes = kwargs.get("max_nbytes", 1000000000)
         max_tensors = kwargs.get("max_tensors", 4)
         max_dims = kwargs.get("max_dims", 8)
-        return SharedMemoryTransport(
+        return SharedMemoryServer(
             path=shm_path, 
-            num_clients=num_clients, 
+            num_slots=num_clients,
             max_nbytes=max_nbytes, 
             max_tensors=max_tensors,
             max_dims=max_dims

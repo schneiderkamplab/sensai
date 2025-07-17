@@ -385,7 +385,7 @@ if __name__ == "__main__":
     
     # Create and run server
     sensai_server = SensAIServer(transport)
-    print(f"SensAIServer started with {transport.num_clients} client slots")
+    print(f"SensAIServer started with {transport.num_slots} client slots")
     print("Server is running... Press Ctrl+C to stop")
     
     try:

@@ -20,7 +20,7 @@ from datasets import load_dataset
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from sensai.client import SensAIClient
-from sensai.transports import SharedMemoryTransport
+from sensai.transports import SharedMemoryClient
 from sensai.utils import wrap_collate_function
 
 
@@ -169,14 +169,11 @@ def main():
     # Set up SensAI client
     print("Setting up SensAI client...")
     shm_path = "/tmp/sensai_teacher_shm"
-    transport = SharedMemoryTransport(
+    transport = SharedMemoryClient(
         path=shm_path, 
-        num_clients=1, 
-        max_nbytes=3_000_000_000,
-        max_tensors=8,
-        max_dims=8
+        slot_id=0,
     )
-    client = SensAIClient(transport, slot_id=0)
+    client = SensAIClient(transport)
     
     # Wrap the collate function
     wrapped_collate = wrap_collate_function(

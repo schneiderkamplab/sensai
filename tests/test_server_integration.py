@@ -19,7 +19,7 @@ class TestSensAIServerIntegration:
     def transport_setup(self):
         """Set up named pipe transport for testing"""
         pipe_dir = tempfile.mkdtemp(prefix='sensai_test_')
-        transport = NamedPipeTransport(path=pipe_dir, num_clients=2)
+        transport = NamedPipeTransport(path=pipe_dir, num_slots=2)
         yield transport, pipe_dir
         # Cleanup
         shutil.rmtree(pipe_dir, ignore_errors=True)
