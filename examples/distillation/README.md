@@ -6,8 +6,8 @@ This example demonstrates how to use SensAI for knowledge distillation with lang
 
 The example sets up a teacher-student knowledge distillation scenario where:
 
-- **Teacher Model**: `google/gemma-2-1b-it` (serving logits via SensAI server)
-- **Student Model**: `google/gemma-2-1b-it` (training with teacher guidance)
+- **Teacher Model**: `google/gemma-3-1b-it` (serving logits via SensAI server)
+- **Student Model**: `google/gemma-3-1b-pt` (training with teacher guidance)
 - **Dataset**: WikiText-2 (small subset for demonstration)
 
 ## Files
