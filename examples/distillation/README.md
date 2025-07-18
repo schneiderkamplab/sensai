@@ -19,7 +19,7 @@ The example sets up a teacher-student knowledge distillation scenario where:
 ## Key Features
 
 ### Teacher Server
-- Runs `google/gemma-2-1b-it` as a teacher model
+- Runs `google/gemma-3-1b-it` as a teacher model
 - Serves logits via named pipe transport
 - Configured for single client connection
 
