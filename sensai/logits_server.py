@@ -315,8 +315,8 @@ def process_logits_request(teacher_server: TeacherLogitsServer, input_data) -> L
 if __name__ == "__main__":
     import argparse
     import os
-    from .server import SensAIServer
-    from .utils import create_transport
+    from sensai.server import SensAIServer
+    from sensai.utils import create_transport
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Teacher Logits Server")
